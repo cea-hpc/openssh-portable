@@ -2445,7 +2445,7 @@ main(int argc, char **argv)
 
 	int channel = 0;
 	struct addrinfo *addrlist, *p = NULL;
-	struct sockaddr_in *h;
+	struct sockaddr_in *h = NULL;
 	char channel_name[15] = "main channel";
 	struct thread_args targs[MAX_CHANNELS];
 	struct thread_order order;
@@ -2637,11 +2637,12 @@ main(int argc, char **argv)
 	}
 
 	addrlist = resolve_host(host);
-	if (addrlist == NULL)
-		fatal("Could not resolve hostname %s", host);
-	p = random_host(addrlist);
-	if (extra_channels)
+	if (extra_channels) {
+		if (addrlist == NULL)
+			fatal("Could not resolve hostname %s", host);
+		p = random_host(addrlist);
 		queue = thread_queue_create(10 * extra_channels);
+	}
 
 	for (channel = 0; channel <= extra_channels; channel++) {
 		if (channel) {
@@ -2650,13 +2651,15 @@ main(int argc, char **argv)
 		in[channel] = -1;
 		out[channel] = -1;
 		if (sftp_direct == NULL) {
-			if (p == NULL) {
-				p = addrlist;
+			if (extra_channels) {
+				if (p == NULL) {
+					p = addrlist;
+				}
+				h = (struct sockaddr_in *) p->ai_addr;
+				replacearg(&args, args.num - 2, "%s",
+						inet_ntoa(h->sin_addr));
+				p = p->ai_next;
 			}
-			h = (struct sockaddr_in *) p->ai_addr;
-			replacearg(&args, args.num - 2, "%s",
-			    inet_ntoa(h->sin_addr));
-			p = p->ai_next;
 			connect_to_server(ssh_program, args.list, &in[channel],
 			    &out[channel], channel);
 		} else {
@@ -2678,10 +2681,12 @@ main(int argc, char **argv)
 		}
 
 		if (!quiet) {
-			if (sftp_direct == NULL)
+			if (sftp_direct == NULL && extra_channels)
 				fprintf(stderr, "Connected %s to %s (%s).\n",
 				    channel_name , host,
 				    inet_ntoa(h->sin_addr));
+			else if (sftp_direct == NULL)
+				fprintf(stderr, "Connected to %s.\n", host);
 			else
 				fprintf(stderr, "Attached to %s.\n",
 				    sftp_direct);
