@@ -2416,9 +2416,9 @@ usage(void)
 	fprintf(stderr,
 	    "usage: %s [-46aCfpqrv] [-B buffer_size] [-b batchfile] [-c cipher]\n"
 	    "          [-D sftp_server_path] [-F ssh_config] [-i identity_file]\n"
-	    "          [-J destination] [-l limit] [-o ssh_option] [-P port]\n"
-	    "          [-R num_requests] [-S program] [-s subsystem | sftp_server]\n"
-	    "          destination\n",
+	    "          [-J destination] [-l limit] [-n extra_channels] [-o ssh_option]\n"
+	    "          [-P port] [-R num_requests] [-S program]\n"
+	    "          [-s subsystem | sftp_server] destination\n",
 	    __progname);
 	exit(1);
 }
