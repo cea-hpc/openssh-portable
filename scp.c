@@ -156,6 +156,20 @@ struct bwlimit bwlimit;
 /* Name of current file being transferred. */
 char *curfile;
 
+/* Number of extra channels (-n option) */
+int extra_channels = 0;
+
+/* Size of un chunk (used when extra_channels > 0) */
+off_t base_chunk_size = 67108864;
+
+/* Order sent to thread_queue -- Do nothing, useful for sftp */
+struct thread_order {
+	const char *func, *remote_path, *local_path;
+	Attrib *a;
+	int preserve_flag, resume_flag, fsync_flag, err_abort;
+	off_t chunk_start, chunk_end;
+};
+
 /* This is set to non-zero to enable verbose mode. */
 int verbose_mode = 0;
 LogLevel log_level = SYSLOG_LEVEL_INFO;
@@ -1374,11 +1388,11 @@ source_sftp(int argc, char *src, char *targ, struct sftp_conn *conn)
 
 	if (src_is_dir && iamrecursive) {
 		if (sftp_upload_dir(conn, src, abs_dst, pflag,
-		    SFTP_PROGRESS_ONLY, 0, 0, 1, 1) != 0) {
+		    SFTP_PROGRESS_ONLY, 0, 0, 1, 1, 1) != 0) {
 			error("failed to upload directory %s to %s", src, targ);
 			errs = 1;
 		}
-	} else if (sftp_upload(conn, src, abs_dst, pflag, 0, 0, 1) != 0) {
+	} else if (sftp_upload(conn, src, abs_dst, pflag, 0, 0, 1, 0, 0, 0) != 0) {
 		error("failed to upload file %s to %s", src, targ);
 		errs = 1;
 	}
@@ -1459,7 +1473,7 @@ next:			if (fd != -1) {
 			continue;
 		}
 		if (showprogress)
-			start_progress_meter(curfile, stb.st_size, &statbytes);
+			start_progress_meter(curfile, stb.st_size, &statbytes, 0);
 		set_nonblock(remout);
 		for (haderr = i = 0; i < stb.st_size; i += bp->cnt) {
 			amt = bp->cnt;
@@ -1495,7 +1509,7 @@ next:			if (fd != -1) {
 			run_err("%s: %s", name, strerror(haderr));
 		(void) response();
 		if (showprogress)
-			stop_progress_meter();
+			stop_progress_meter(0, 0);
 	}
 }
 
@@ -1630,11 +1644,11 @@ sink_sftp(int argc, char *dst, const char *src, struct sftp_conn *conn)
 		debug("Fetching %s to %s\n", g.gl_pathv[i], abs_dst);
 		if (sftp_globpath_is_dir(g.gl_pathv[i]) && iamrecursive) {
 			if (sftp_download_dir(conn, g.gl_pathv[i], abs_dst,
-			    NULL, pflag, SFTP_PROGRESS_ONLY, 0, 0, 1, 1) == -1)
+			    NULL, pflag, SFTP_PROGRESS_ONLY, 0, 0, 1, 1, 1) == -1)
 				err = -1;
 		} else {
 			if (sftp_download(conn, g.gl_pathv[i], abs_dst, NULL,
-			    pflag, 0, 0, 1) == -1)
+			    pflag, 0, 0, 1, 0, 0, 0) == -1)
 				err = -1;
 		}
 		free(abs_dst);
@@ -1893,7 +1907,7 @@ bad:			run_err("%s: %s", np, strerror(errno));
 		 */
 		statbytes = 0;
 		if (showprogress)
-			start_progress_meter(curfile, size, &statbytes);
+			start_progress_meter(curfile, size, &statbytes, 0);
 		set_nonblock(remin);
 		for (count = i = 0; i < size; i += bp->cnt) {
 			amt = bp->cnt;
@@ -1961,7 +1975,7 @@ bad:			run_err("%s: %s", np, strerror(errno));
 			note_err("%s: close: %s", np, strerror(errno));
 		(void) response();
 		if (showprogress)
-			stop_progress_meter();
+			stop_progress_meter(0, 0);
 		if (setimes && !wrerr) {
 			setimes = 0;
 			if (utimes(np, tv) == -1) {
@@ -2274,4 +2288,10 @@ cleanup_exit(int i)
 	if (do_cmd_pid2 > 0)
 		(void)waitpid(do_cmd_pid2, NULL, 0);
 	exit(i);
+}
+
+void
+thread_queue_safe_enqueue(struct thread_order order)
+{
+	/* Do nothing, only useful for sftp */
 }

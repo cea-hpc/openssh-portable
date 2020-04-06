@@ -137,33 +137,41 @@ int sftp_symlink(struct sftp_conn *, const char *, const char *);
 /* Call fsync() on open file 'handle' */
 int sftp_fsync(struct sftp_conn *conn, u_char *, u_int);
 
+/* Split big files into smaller chunks, then send the chunks to sftp_download */
+int sftp_split_download(struct sftp_conn *, const char *, const char *, Attrib *,
+    int, int, int, int, int);
+
 /*
  * Download 'remote_path' to 'local_path'. Preserve permissions and times
  * if 'pflag' is set
  */
 int sftp_download(struct sftp_conn *, const char *, const char *, Attrib *,
-    int, int, int, int);
+    int, int, int, int, int, off_t, off_t);
 
 /*
  * Recursively download 'remote_directory' to 'local_directory'. Preserve
  * times if 'pflag' is set
  */
 int sftp_download_dir(struct sftp_conn *, const char *, const char *, Attrib *,
-    int, int, int, int, int, int);
+    int, int, int, int, int, int, int);
+
+/* Split big files into smaller chunks, then send the chunks to sftp_upload */
+int sftp_split_upload(struct sftp_conn *, const char *, const char *, int, int,
+    int, int, int);
 
 /*
  * Upload 'local_path' to 'remote_path'. Preserve permissions and times
  * if 'pflag' is set
  */
 int sftp_upload(struct sftp_conn *, const char *, const char *,
-    int, int, int, int);
+    int, int, int, int, int, off_t, off_t);
 
 /*
  * Recursively upload 'local_directory' to 'remote_directory'. Preserve
  * times if 'pflag' is set
  */
 int sftp_upload_dir(struct sftp_conn *, const char *, const char *,
-    int, int, int, int, int, int);
+    int, int, int, int, int, int, int);
 
 /*
  * Download a 'from_path' from the 'from' connection and upload it to
@@ -203,5 +211,25 @@ int sftp_remote_is_dir(struct sftp_conn *conn, const char *path);
 
 /* Check whether path returned from glob(..., GLOB_MARK, ...) is a directory */
 int sftp_globpath_is_dir(const char *pathname);
+
+/*
+ * Open remote directory in order to refresh the file system cache. This is
+ * useful in the case of a parallel upload to a distributed file system (such as
+ * NFS or Lustre)
+ */
+void fake_opendir(struct sftp_conn *, const char *);
+
+/*
+ * Stat a remote file or directory in order to know if it's accessible. Find
+ * the closest accessible directory, and fake_opendir it
+ */
+int reverse_recurse_stat(struct sftp_conn *, const char *);
+
+/*
+ * Loop (with timeout) until the file or directory is available. Useful in the
+ * case of a parallel upload to a distributed file system (such as NFS or
+ * Lustre)
+ */
+void wait_availability(struct sftp_conn *, int, const char *);
 
 #endif

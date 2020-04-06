@@ -1,0 +1,16 @@
+---
+name: cea-hpc
+
+on: [push]
+
+jobs:
+  docker:
+    name: Docker tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@main
+      - name: Run tests
+        run: |
+          cd regress/docker
+          bash run.sh

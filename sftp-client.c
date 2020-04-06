@@ -45,12 +45,16 @@
 # endif
 #endif
 #include <fcntl.h>
+#include <math.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef HAVE_LIBGEN_H
+#include <libgen.h>
+#endif
 
 #include "xmalloc.h"
 #include "ssherr.h"
@@ -67,6 +71,7 @@
 
 extern volatile sig_atomic_t interrupted;
 extern int showprogress;
+extern int extra_channels;
 
 /* Default size of buffer for up/download (fix sftp.1 scp.1 if changed) */
 #define DEFAULT_COPY_BUFLEN	32768
@@ -118,6 +123,14 @@ struct request {
 	TAILQ_ENTRY(request) tq;
 };
 TAILQ_HEAD(requests, request);
+
+struct thread_order {
+	const char *func, *remote_path, *local_path;
+	Attrib *a;
+	int preserve_flag, resume_flag, fsync_flag, inplace_flag, err_abort;
+	off_t chunk_start, chunk_end;
+};
+extern off_t base_chunk_size;
 
 static u_char *
 get_handle(struct sftp_conn *conn, u_int expected_id, size_t *len,
@@ -698,6 +711,75 @@ sftp_close(struct sftp_conn *conn, const u_char *handle, u_int handle_len)
 	return status == SSH2_FX_OK ? 0 : -1;
 }
 
+void
+fake_opendir(struct sftp_conn *conn, const char *path)
+{
+	struct sshbuf *msg;
+	u_int id;
+	size_t handle_len;
+	u_char *handle;
+	id = conn->msg_id++;
+	int r;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+	if ((r = sshbuf_put_u8(msg, SSH2_FXP_OPENDIR)) != 0 ||
+	    (r = sshbuf_put_u32(msg, id)) != 0 ||
+	    (r = sshbuf_put_cstring(msg, path)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	send_msg(conn, msg);
+
+	handle = get_handle(conn, id, &handle_len, NULL);
+
+	sshbuf_free(msg);
+	if (handle == NULL)
+		return;
+
+	sftp_close(conn, handle, handle_len);
+	free(handle);
+}
+
+int
+reverse_recurse_stat(struct sftp_conn *conn, const char *file)
+{
+	int ret = 0;
+	char *path, *dir;
+	Attrib a;
+
+	path = (char *)malloc(strlen(file));
+	strcpy(path, file);
+	dir = dirname(path);
+	if (dir == file) {
+		ret = -1;
+	} else {
+		if (sftp_stat(conn, dir, 1, &a) != 0) {
+			ret = reverse_recurse_stat(conn, dir);
+		} else {
+			fake_opendir(conn, dir);
+		}
+	}
+	free(path);
+	return ret;
+}
+
+void
+wait_availability(struct sftp_conn *conn, int channel, const char *path)
+{
+	int delay = 0;
+	Attrib a;
+	while (delay < 3000000 && sftp_stat(conn, path, 1, &a) != 0) {
+		if (delay) {
+			debug("thread %d: delayed upload %d microsecs", channel,
+			    delay);
+			usleep(delay);
+			delay *= 2;
+		} else {
+			debug("thread %d: retried upload", channel);
+			delay = 10000;
+		}
+		reverse_recurse_stat(conn, path);
+	}
+}
 
 static int
 sftp_lsreaddir(struct sftp_conn *conn, const char *path, int print_flag,
@@ -1594,9 +1676,94 @@ progress_meter_path(const char *path)
 }
 
 int
+sftp_split_download(struct sftp_conn *conn, const char *remote_path,
+    const char *local_path, Attrib *a, int preserve_flag, int resume_flag,
+    int fsync_flag, int inplace_flag, int err_abort)
+{
+	int nb_chunks, i;
+	u_int status = SSH2_FX_OK;
+	off_t size, chunk_size, sparse_start;
+	struct thread_order order;
+	Attrib attr;
+	Attrib *aa = NULL;
+
+	if (extra_channels == 0)
+		return sftp_download(conn, remote_path, local_path, a,
+		    preserve_flag, resume_flag, fsync_flag, inplace_flag, 0, 0, 0);
+
+	if (a == NULL) {
+		if (sftp_stat(conn, remote_path, 0, &attr) != 0)
+			return -1;
+		a = &attr;
+	}
+
+	if ((a->flags & SSH2_FILEXFER_ATTR_PERMISSIONS) &&
+	    (!S_ISREG(a->perm))) {
+		error("download %s: not a regular file", remote_path);
+		return(-1);
+	}
+
+	if (a->flags & SSH2_FILEXFER_ATTR_SIZE)
+		size = a->size;
+	else
+		size = 0;
+	if (size > base_chunk_size) {
+		if (size <= base_chunk_size * extra_channels) {
+			chunk_size = base_chunk_size;
+		} else {
+			chunk_size = (off_t) round((double) size /
+			    (double) extra_channels / (double) base_chunk_size)
+			    * base_chunk_size;
+		}
+		nb_chunks = (int) round((double) size / (double) chunk_size);
+		if (nb_chunks > extra_channels)
+			nb_chunks = extra_channels;
+		sparse_start = (size - 1) / conn->download_buflen *
+		    conn->download_buflen;
+		sftp_download(conn, remote_path, local_path, a, preserve_flag,
+		    resume_flag, fsync_flag, inplace_flag, 0, sparse_start, 0);
+		for (i = 0; i < nb_chunks; i++) {
+			order.func = "sftp_download";
+			order.remote_path = strdup(remote_path);
+			order.local_path = strdup(local_path);
+			aa = (Attrib *) malloc(sizeof(Attrib));
+			memcpy(aa, a, sizeof(Attrib));
+			order.a = aa;
+			order.preserve_flag = preserve_flag;
+			order.resume_flag = 0;
+			order.fsync_flag = fsync_flag;
+			order.inplace_flag = inplace_flag;
+			order.err_abort = err_abort;
+			order.chunk_start = i * chunk_size;
+			if (i == nb_chunks - 1)
+				order.chunk_end = sparse_start - 1;
+			else
+				order.chunk_end = (i + 1) * chunk_size - 1;
+			thread_queue_safe_enqueue(order);
+		}
+	} else {
+		order.func = "sftp_download";
+		order.remote_path = strdup(remote_path);
+		order.local_path = strdup(local_path);
+		aa = (Attrib *) malloc(sizeof(Attrib));
+		memcpy(aa, a, sizeof(Attrib));
+		order.a = aa;
+		order.preserve_flag = preserve_flag;
+		order.resume_flag = resume_flag;
+		order.fsync_flag = fsync_flag;
+		order.inplace_flag = inplace_flag;
+		order.err_abort = err_abort;
+		order.chunk_start = 0;
+		order.chunk_end = 0;
+		thread_queue_safe_enqueue(order);
+	}
+	return status == SSH2_FX_OK ? 0 : -1;
+}
+
+int
 sftp_download(struct sftp_conn *conn, const char *remote_path,
     const char *local_path, Attrib *a, int preserve_flag, int resume_flag,
-    int fsync_flag, int inplace_flag)
+    int fsync_flag, int inplace_flag, int channel, off_t chunk_start, off_t chunk_end)
 {
 	struct sshbuf *msg;
 	u_char *handle;
@@ -1604,7 +1771,7 @@ sftp_download(struct sftp_conn *conn, const char *remote_path,
 	int read_error, write_errno, lmodified = 0, reordered = 0, r;
 	u_int64_t offset = 0, size, highwater = 0, maxack = 0;
 	u_int mode, id, buflen, num_req, max_req, status = SSH2_FX_OK;
-	off_t progress_counter;
+	off_t progress_counter, progress_filesize;
 	size_t handle_len;
 	struct stat st;
 	struct requests requests;
@@ -1647,8 +1814,11 @@ sftp_download(struct sftp_conn *conn, const char *remote_path,
 	    &handle, &handle_len) != 0)
 		return -1;
 
+	if (chunk_start || chunk_end) {
+		resume_flag = 0;
+	}
 	local_fd = open(local_path, O_WRONLY | O_CREAT |
-	((resume_flag || inplace_flag) ? 0 : O_TRUNC), mode | S_IWUSR);
+	((resume_flag || inplace_flag || ((chunk_start || chunk_end) && channel)) ? 0 : O_TRUNC), mode | S_IWUSR);
 	if (local_fd == -1) {
 		error("open local \"%s\": %s", local_path, strerror(errno));
 		goto fail;
@@ -1674,17 +1844,53 @@ sftp_download(struct sftp_conn *conn, const char *remote_path,
 			return -1;
 		}
 		offset = highwater = maxack = st.st_size;
+	} else if (chunk_start) {
+		if (channel) {
+			/*
+			 * don't check if we're in the main channel, because
+			 * we're creating the file anyway
+			 */ 
+			if (fstat(local_fd, &st) == -1) {
+				error("Unable to stat local file \"%s\": %s",
+				    local_path, strerror(errno));
+				goto fail;
+			}
+			if (st.st_size < 0) {
+				error("\"%s\" has negative size", local_path);
+				goto failchunk;
+			}
+			if ((u_int64_t)st.st_size != size) {
+				error("Unable to download chunk of \"%s\": "
+				    "local file doesn't have the same size as "
+				    "remote", local_path);
+failchunk:
+				sftp_close(conn, handle, handle_len);
+				free(handle);
+				if (local_fd != -1)
+					close(local_fd);
+				return -1;
+			}
+		}
+		offset = highwater = maxack = chunk_start;
 	}
 
 	/* Read from remote and write to local */
 	write_error = read_error = write_errno = num_req = 0;
 	max_req = 1;
-	progress_counter = offset;
-
-	if (showprogress && size != 0) {
-		start_progress_meter(progress_meter_path(remote_path),
-		    size, &progress_counter);
+	if (chunk_start) {
+		progress_counter = 0;
+	} else {
+		progress_counter = offset;
 	}
+
+	if (chunk_end) {
+		progress_filesize = 0;
+	} else {
+		progress_filesize = size;
+	}
+	if (showprogress && size != 0)
+		start_progress_meter(progress_meter_path(remote_path),
+		    progress_filesize, &progress_counter, channel);
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal_f("sshbuf_new failed");
@@ -1693,11 +1899,14 @@ sftp_download(struct sftp_conn *conn, const char *remote_path,
 		u_char *data;
 		size_t len;
 
+		if (chunk_end && (off_t)offset - 1 > chunk_end)
+			fatal("%s: offset - 1 > chunk_end", __func__);
 		/*
 		 * Simulate EOF on interrupt: stop sending new requests and
 		 * allow outstanding requests to drain gracefully
 		 */
-		if (interrupted) {
+		if (interrupted || (chunk_end &&
+		    (off_t)offset - 1 == chunk_end)) {
 			if (num_req == 0) /* If we haven't started yet... */
 				break;
 			max_req = 0;
@@ -1705,6 +1914,10 @@ sftp_download(struct sftp_conn *conn, const char *remote_path,
 
 		/* Send some more requests */
 		while (num_req < max_req) {
+			if (chunk_end && (off_t)offset - 1 == chunk_end)
+				break;
+			else if (chunk_end && (off_t)offset - 1 > chunk_end)
+				fatal("%s: offset - 1 > chunk_end", __func__);
 			debug3("Request range %llu -> %llu (%d/%d)",
 			    (unsigned long long)offset,
 			    (unsigned long long)offset + buflen - 1,
@@ -1813,7 +2026,7 @@ sftp_download(struct sftp_conn *conn, const char *remote_path,
 	}
 
 	if (showprogress && size)
-		stop_progress_meter();
+		stop_progress_meter(channel, extra_channels);
 
 	/* Sanity check */
 	if (TAILQ_FIRST(&requests) != NULL)
@@ -1890,7 +2103,7 @@ sftp_download(struct sftp_conn *conn, const char *remote_path,
 static int
 download_dir_internal(struct sftp_conn *conn, const char *src, const char *dst,
     int depth, Attrib *dirattrib, int preserve_flag, int print_flag,
-    int resume_flag, int fsync_flag, int follow_link_flag, int inplace_flag)
+    int resume_flag, int fsync_flag, int follow_link_flag, int inplace_flag, int err_abort)
 {
 	int i, ret = 0;
 	SFTP_DIRENT **dir_entries;
@@ -1968,12 +2181,12 @@ download_dir_internal(struct sftp_conn *conn, const char *src, const char *dst,
 			if (download_dir_internal(conn, new_src, new_dst,
 			    depth + 1, a, preserve_flag,
 			    print_flag, resume_flag,
-			    fsync_flag, follow_link_flag, inplace_flag) == -1)
+			    fsync_flag, follow_link_flag, inplace_flag, err_abort) == -1)
 				ret = -1;
 		} else if (S_ISREG(a->perm)) {
-			if (sftp_download(conn, new_src, new_dst, a,
+			if (sftp_split_download(conn, new_src, new_dst, a,
 			    preserve_flag, resume_flag, fsync_flag,
-			    inplace_flag) == -1) {
+			    inplace_flag, err_abort) == -1) {
 				error("Download of file %s to %s failed",
 				    new_src, new_dst);
 				ret = -1;
@@ -2011,7 +2224,7 @@ download_dir_internal(struct sftp_conn *conn, const char *src, const char *dst,
 int
 sftp_download_dir(struct sftp_conn *conn, const char *src, const char *dst,
     Attrib *dirattrib, int preserve_flag, int print_flag, int resume_flag,
-    int fsync_flag, int follow_link_flag, int inplace_flag)
+    int fsync_flag, int follow_link_flag, int inplace_flag, int err_abort)
 {
 	char *src_canon;
 	int ret;
@@ -2023,19 +2236,105 @@ sftp_download_dir(struct sftp_conn *conn, const char *src, const char *dst,
 
 	ret = download_dir_internal(conn, src_canon, dst, 0,
 	    dirattrib, preserve_flag, print_flag, resume_flag, fsync_flag,
-	    follow_link_flag, inplace_flag);
+	    follow_link_flag, inplace_flag, err_abort);
 	free(src_canon);
 	return ret;
 }
 
 int
+sftp_split_upload(struct sftp_conn *conn, const char *local_path,
+    const char *remote_path, int preserve_flag, int resume,
+    int fsync_flag, int inplace_flag, int err_abort)
+{
+	int local_fd, nb_chunks, i;
+	u_int status = SSH2_FX_OK;
+	struct stat sb;
+	Attrib a;
+	struct thread_order order;
+	off_t chunk_size, sparse_start;
+
+	if (extra_channels == 0)
+		return sftp_upload(conn, local_path, remote_path, preserve_flag,
+		    resume, fsync_flag, inplace_flag, 0, 0, 0);
+
+	if ((local_fd = open(local_path, O_RDONLY, 0)) == -1) {
+		error("open local \"%s\": %s", local_path, strerror(errno));
+		return(-1);
+	}
+	if (fstat(local_fd, &sb) == -1) {
+		error("fstat local \"%s\": %s", local_path, strerror(errno));
+		close(local_fd);
+		return(-1);
+	}
+	if (!S_ISREG(sb.st_mode)) {
+		error("local \"%s\" is not a regular file", local_path);
+		close(local_fd);
+		return(-1);
+	}
+	stat_to_attrib(&sb, &a);
+
+	a.flags &= ~SSH2_FILEXFER_ATTR_SIZE;
+	a.flags &= ~SSH2_FILEXFER_ATTR_UIDGID;
+	a.perm &= 0777;
+	if (!preserve_flag)
+		a.flags &= ~SSH2_FILEXFER_ATTR_ACMODTIME;
+
+	if (sb.st_size > base_chunk_size) {
+		if (sb.st_size <= base_chunk_size * extra_channels) {
+			chunk_size = base_chunk_size;
+		} else {
+			chunk_size = (off_t) round((double) sb.st_size /
+			    (double) extra_channels / (double) base_chunk_size)
+			    * base_chunk_size;
+		}
+		nb_chunks = (int) round((double) sb.st_size / (double) chunk_size);
+		if (nb_chunks > extra_channels)
+			nb_chunks = extra_channels;
+		sparse_start = (sb.st_size - 1) / conn->upload_buflen *
+		    conn->upload_buflen;
+		sftp_upload(conn, local_path, remote_path, preserve_flag, resume,
+		    fsync_flag, inplace_flag, 0, sparse_start, 0);
+		for (i = 0; i < nb_chunks; i++) {
+			order.func = "sftp_upload";
+			order.remote_path = strdup(remote_path);
+			order.local_path = strdup(local_path);
+			order.preserve_flag = preserve_flag;
+			order.resume_flag = 0;
+			order.fsync_flag = fsync_flag;
+			order.inplace_flag = inplace_flag;
+			order.err_abort = err_abort;
+			order.chunk_start = i * chunk_size;
+			if (i == nb_chunks - 1)
+				order.chunk_end = sparse_start - 1;
+			else
+				order.chunk_end = (i + 1) * chunk_size - 1;
+			thread_queue_safe_enqueue(order);
+		}
+	} else {
+		order.func = "sftp_upload";
+		order.remote_path = strdup(remote_path);
+		order.local_path = strdup(local_path);
+		order.preserve_flag = preserve_flag;
+		order.resume_flag = resume;
+		order.fsync_flag = fsync_flag;
+		order.inplace_flag = inplace_flag;
+		order.err_abort = err_abort;
+		order.chunk_start = 0;
+		order.chunk_end = 0;
+		thread_queue_safe_enqueue(order);
+	}
+
+	return status == SSH2_FX_OK ? 0 : -1;
+}
+
+int
 sftp_upload(struct sftp_conn *conn, const char *local_path,
     const char *remote_path, int preserve_flag, int resume,
-    int fsync_flag, int inplace_flag)
+    int fsync_flag, int inplace_flag, int channel, off_t chunk_start, off_t chunk_end)
 {
 	int r, local_fd;
 	u_int openmode, id, status = SSH2_FX_OK, reordered = 0;
-	off_t offset, progress_counter;
+	off_t offset, progress_counter, progress_filesize;
 	u_char type, *handle, *data;
 	struct sshbuf *msg;
 	struct stat sb;
@@ -2073,6 +2372,9 @@ sftp_upload(struct sftp_conn *conn, const char *local_path,
 	if (!preserve_flag)
 		a.flags &= ~SSH2_FILEXFER_ATTR_ACMODTIME;
 
+	if (chunk_start || chunk_end) {
+		resume = 0;
+	}
 	if (resume) {
 		/* Get remote file size if it exists */
 		if (sftp_stat(conn, remote_path, 0, &c) != 0) {
@@ -2091,12 +2393,36 @@ sftp_upload(struct sftp_conn *conn, const char *local_path,
 			close(local_fd);
 			return -1;
 		}
+	} else if (chunk_start) {
+		/*
+		 * don't check if we're in the main channel, because we're
+		 * going to create the file anyway
+		 */
+		if (channel) {
+			/* Get remote file size if it exists */
+			if (sftp_stat(conn, remote_path, 0, &c) != 0) {
+				close(local_fd);
+				return -1;
+			}
+
+			if ((off_t)c.size != sb.st_size) {
+				error("destination file doesn't have the same "
+				      "size as source file");
+				close(local_fd);
+				return -1;
+			}
+		}
+
+		if (lseek(local_fd, chunk_start, SEEK_SET) == -1) {
+			close(local_fd);
+			return -1;
+		}
 	}
 
 	openmode = SSH2_FXF_WRITE|SSH2_FXF_CREAT;
 	if (resume)
 		openmode |= SSH2_FXF_APPEND;
-	else if (!inplace_flag)
+	else if (!inplace_flag && !((chunk_start || chunk_end) && channel))
 		openmode |= SSH2_FXF_TRUNC;
 
 	/* Send open request */
@@ -2111,11 +2437,22 @@ sftp_upload(struct sftp_conn *conn, const char *local_path,
 	data = xmalloc(conn->upload_buflen);
 
 	/* Read from local and write to remote */
-	offset = progress_counter = (resume ? c.size : 0);
-	if (showprogress) {
-		start_progress_meter(progress_meter_path(local_path),
-		    sb.st_size, &progress_counter);
+	if (resume) {
+		offset = progress_counter = c.size;
+	} else if (chunk_start) {
+		offset = chunk_start;
+		progress_counter = 0;
+	} else {
+		offset = progress_counter = 0;
 	}
+	if (chunk_end) {
+		progress_filesize = 0;
+	} else {
+		progress_filesize = sb.st_size;
+	}
+	if (showprogress)
+		start_progress_meter(progress_meter_path(local_path),
+		    progress_filesize, &progress_counter, channel);
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal_f("sshbuf_new failed");
@@ -2128,7 +2465,8 @@ sftp_upload(struct sftp_conn *conn, const char *local_path,
 		 * Simulate an EOF on interrupt, allowing ACKs from the
 		 * server to drain.
 		 */
-		if (interrupted || status != SSH2_FX_OK)
+		if (interrupted || status != SSH2_FX_OK ||
+		    (chunk_end && offset - 1 == chunk_end))
 			len = 0;
 		else do
 			len = read(local_fd, data, conn->upload_buflen);
@@ -2202,11 +2540,13 @@ sftp_upload(struct sftp_conn *conn, const char *local_path,
 		offset += len;
 		if (offset < 0)
 			fatal_f("offset < 0");
+		else if (chunk_end && offset - 1 > chunk_end)
+			fatal_f("offset - 1 > chunk_end");
 	}
 	sshbuf_free(msg);
 
 	if (showprogress)
-		stop_progress_meter();
+		stop_progress_meter(channel, extra_channels);
 	free(data);
 
 	if (status == SSH2_FX_OK && !interrupted) {
@@ -2249,7 +2589,7 @@ sftp_upload(struct sftp_conn *conn, const char *local_path,
 static int
 upload_dir_internal(struct sftp_conn *conn, const char *src, const char *dst,
     int depth, int preserve_flag, int print_flag, int resume, int fsync_flag,
-    int follow_link_flag, int inplace_flag)
+    int follow_link_flag, int inplace_flag, int err_abort)
 {
 	int ret = 0;
 	DIR *dirp;
@@ -2340,12 +2680,12 @@ upload_dir_internal(struct sftp_conn *conn, const char *src, const char *dst,
 		if (S_ISDIR(sb.st_mode)) {
 			if (upload_dir_internal(conn, new_src, new_dst,
 			    depth + 1, preserve_flag, print_flag, resume,
-			    fsync_flag, follow_link_flag, inplace_flag) == -1)
+			    fsync_flag, follow_link_flag, inplace_flag, err_abort) == -1)
 				ret = -1;
 		} else if (S_ISREG(sb.st_mode)) {
-			if (sftp_upload(conn, new_src, new_dst,
+			if (sftp_split_upload(conn, new_src, new_dst,
 			    preserve_flag, resume, fsync_flag,
-			    inplace_flag) == -1) {
+			    inplace_flag, err_abort) == -1) {
 				error("upload \"%s\" to \"%s\" failed",
 				    new_src, new_dst);
 				ret = -1;
@@ -2365,7 +2705,7 @@ upload_dir_internal(struct sftp_conn *conn, const char *src, const char *dst,
 int
 sftp_upload_dir(struct sftp_conn *conn, const char *src, const char *dst,
     int preserve_flag, int print_flag, int resume, int fsync_flag,
-    int follow_link_flag, int inplace_flag)
+    int follow_link_flag, int inplace_flag, int err_abort)
 {
 	char *dst_canon;
 	int ret;
@@ -2376,7 +2716,7 @@ sftp_upload_dir(struct sftp_conn *conn, const char *src, const char *dst,
 	}
 
 	ret = upload_dir_internal(conn, src, dst_canon, 0, preserve_flag,
-	    print_flag, resume, fsync_flag, follow_link_flag, inplace_flag);
+	    print_flag, resume, fsync_flag, follow_link_flag, inplace_flag, err_abort);
 
 	free(dst_canon);
 	return ret;
@@ -2517,7 +2857,7 @@ sftp_crossload(struct sftp_conn *from, struct sftp_conn *to,
 
 	if (showprogress && size != 0) {
 		start_progress_meter(progress_meter_path(from_path),
-		    size, &progress_counter);
+		    size, &progress_counter, 0);
 	}
 	if ((msg = sshbuf_new()) == NULL)
 		fatal_f("sshbuf_new failed");
@@ -2643,7 +2983,7 @@ sftp_crossload(struct sftp_conn *from, struct sftp_conn *to,
 	}
 
 	if (showprogress && size)
-		stop_progress_meter();
+		stop_progress_meter(0, 0);
 
 	/* Drain replies from the server (blocking) */
 	debug3_f("waiting for %u replies from destination", num_upload_req);
