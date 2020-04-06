@@ -84,7 +84,7 @@ FILE* infile;
 int batchmode = 0;
 
 /* Number of extra channels (-n option) */
-int extra_channels = 2;
+int extra_channels = 0;
 
 /* PID of ssh transport processes */
 static volatile pid_t sshpid[MAX_CHANNELS];
@@ -2319,15 +2319,17 @@ interactive_loop(struct sftp_conn *conn, char *file1, char *file2)
 
 		err = parse_dispatch_command(conn, cmd, &remote_path,
 		    startdir, batchmode, !interactive && el == NULL);
-		while (is_thread_queue_safe_running()) {
-			pthread_mutex_lock(&queue->master_mutex);
-			pthread_cond_wait(&queue->master_condition,
-			    &queue->master_mutex);
-			pthread_mutex_unlock(&queue->master_mutex);
+		if (extra_channels) {
+			while (is_thread_queue_safe_running()) {
+				pthread_mutex_lock(&queue->master_mutex);
+				pthread_cond_wait(&queue->master_condition,
+						&queue->master_mutex);
+				pthread_mutex_unlock(&queue->master_mutex);
+			}
+			if (err == 0)
+				err = thread_queue_safe_status();
+			real_stop_progress_meter();
 		}
-		if (err == 0)
-			err = thread_queue_safe_status();
-		real_stop_progress_meter();
 		if (err != 0)
 			break;
 	}
@@ -2563,7 +2565,7 @@ main(int argc, char **argv)
 			replacearg(&args, 0, "%s", ssh_program);
 			break;
 		case 'n':
-			extra_channels = strtonum(optarg, 1, MAX_CHANNELS - 1,
+			extra_channels = strtonum(optarg, 0, MAX_CHANNELS - 1,
 			    &errstr);
 			if (errstr != NULL)
 				usage();
@@ -2635,8 +2637,11 @@ main(int argc, char **argv)
 	}
 
 	addrlist = resolve_host(host);
+	if (addrlist == NULL)
+		fatal("Could not resolve hostname %s", host);
 	p = random_host(addrlist);
-	queue = thread_queue_create(10 * extra_channels);
+	if (extra_channels)
+		queue = thread_queue_create(10 * extra_channels);
 
 	for (channel = 0; channel <= extra_channels; channel++) {
 		if (channel) {

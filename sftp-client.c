@@ -1282,6 +1282,10 @@ do_split_download(struct sftp_conn *conn, const char *remote_path,
 	off_t size, chunk_size;
 	struct thread_order order;
 
+	if (extra_channels == 0)
+		return do_download(conn, remote_path, local_path, a,
+		    preserve_flag, resume_flag, fsync_flag, 0, 0, 0);
+
 	if (a == NULL && (a = do_stat(conn, remote_path, 0)) == NULL)
 		return -1;
 
@@ -1491,7 +1495,7 @@ failchunk:
 	} else {
 		progress_filesize = size;
 	}
-	if (showprogress && size != 0 && channel)
+	if (showprogress && size != 0 && (channel || extra_channels == 0))
 		start_progress_meter(remote_path, progress_filesize,
 		    &progress_counter, channel);
 
@@ -1620,7 +1624,7 @@ failchunk:
 		}
 	}
 
-	if (showprogress && size && channel)
+	if (showprogress && size && (channel || extra_channels == 0))
 		stop_progress_meter(channel);
 
 	/* Sanity check */
@@ -1810,6 +1814,10 @@ do_split_upload(struct sftp_conn *conn, const char *local_path,
 	Attrib a;
 	struct thread_order order;
 	off_t chunk_size;
+
+	if (extra_channels == 0)
+		return do_upload(conn, local_path, remote_path, preserve_flag,
+		    resume, fsync_flag, 0, 0, 0);
 
 	if ((local_fd = open(local_path, O_RDONLY, 0)) == -1) {
 		error("Couldn't open local file \"%s\" for reading: %s",
@@ -2028,7 +2036,7 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 	} else {
 		progress_filesize = sb.st_size;
 	}
-	if (showprogress && channel)
+	if (showprogress && (channel || extra_channels == 0))
 		start_progress_meter(local_path, progress_filesize,
 		    &progress_counter, channel);
 
@@ -2120,7 +2128,7 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 	}
 	sshbuf_free(msg);
 
-	if (showprogress && channel)
+	if (showprogress && (channel || extra_channels == 0))
 		stop_progress_meter(channel);
 	free(data);
 

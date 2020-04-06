@@ -145,7 +145,7 @@ refresh_progress_meter(int force_update)
 
 	transferred = total_done - (cur_pos ? cur_pos : start_pos);
 	cur_pos = total_done;
-	for (i = 1; i <= progress_started; i++) {
+	for (i = 0; i <= progress_started; i++) {
 		if (progress_channels[i]) {
 			transferred += *counter[i];
 			cur_pos += *counter[i];
