@@ -1131,7 +1131,7 @@ next:			if (fd != -1) {
 			continue;
 		}
 		if (showprogress)
-			start_progress_meter(curfile, stb.st_size, &statbytes);
+			start_progress_meter(curfile, stb.st_size, &statbytes, 0);
 		set_nonblock(remout);
 		for (haderr = i = 0; i < stb.st_size; i += bp->cnt) {
 			amt = bp->cnt;
@@ -1167,7 +1167,7 @@ next:			if (fd != -1) {
 			run_err("%s: %s", name, strerror(haderr));
 		(void) response();
 		if (showprogress)
-			stop_progress_meter();
+			stop_progress_meter(0);
 	}
 }
 
@@ -1453,7 +1453,7 @@ bad:			run_err("%s: %s", np, strerror(errno));
 
 		statbytes = 0;
 		if (showprogress)
-			start_progress_meter(curfile, size, &statbytes);
+			start_progress_meter(curfile, size, &statbytes, 0);
 		set_nonblock(remin);
 		for (count = i = 0; i < size; i += bp->cnt) {
 			amt = bp->cnt;
@@ -1526,7 +1526,7 @@ bad:			run_err("%s: %s", np, strerror(errno));
 		}
 		(void) response();
 		if (showprogress)
-			stop_progress_meter();
+			stop_progress_meter(0);
 		if (setimes && wrerr == NO) {
 			setimes = 0;
 			if (utimes(np, tv) == -1) {

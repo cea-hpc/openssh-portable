@@ -69,9 +69,13 @@ typedef void EditLine;
 #include "sshbuf.h"
 #include "sftp-common.h"
 #include "sftp-client.h"
+#include "progressmeter.h"
+#include <arpa/inet.h>
+#include <pthread.h>
 
 #define DEFAULT_COPY_BUFLEN	32768	/* Size of buffer for up/download */
 #define DEFAULT_NUM_REQUESTS	64	/* # concurrent outstanding requests */
+#define MAX_CHANNELS		64	/* maximum # of parallel channels */
 
 /* File to read commands from */
 FILE* infile;
@@ -79,8 +83,11 @@ FILE* infile;
 /* Are we in batchfile mode? */
 int batchmode = 0;
 
-/* PID of ssh transport process */
-static volatile pid_t sshpid = -1;
+/* Number of extra channels (-n option) */
+int extra_channels = 2;
+
+/* PID of ssh transport processes */
+static volatile pid_t sshpid[MAX_CHANNELS];
 
 /* Suppress diagnositic messages */
 int quiet = 0;
@@ -111,6 +118,30 @@ glob_t *sort_glob;
 struct complete_ctx {
 	struct sftp_conn *conn;
 	char **remote_pathp;
+};
+
+/* Order sent to thread_queue */
+struct thread_order {
+	const char *func, *remote_path, *local_path;
+	Attrib *a;
+	int preserve_flag, resume_flag, fsync_flag, err_abort;
+	off_t chunk_start, chunk_end;
+};
+
+/* Queue containing orders sent by main channel */
+struct thread_queue {
+	int err;
+	unsigned front, rear, size, capacity, running;
+	struct thread_order *orders;
+	pthread_mutex_t data_mutex, master_mutex, slaves_mutex;
+	pthread_cond_t master_condition, slaves_condition;
+};
+struct thread_queue *queue;
+
+/* Arguments sent to each thread */
+struct thread_args {
+	struct sftp_conn *conn;
+	int channel;
 };
 
 int remote_glob(struct sftp_conn *, const char *, int,
@@ -221,11 +252,14 @@ static void
 killchild(int signo)
 {
 	pid_t pid;
+	int i;
 
-	pid = sshpid;
-	if (pid > 1) {
-		kill(pid, SIGTERM);
-		waitpid(pid, NULL, 0);
+	for (i = 0; i <= extra_channels; i++) {
+		pid = sshpid[i];
+		if (pid > 1) {
+			kill(pid, SIGTERM);
+			waitpid(pid, NULL, 0);
+		}
 	}
 
 	_exit(1);
@@ -235,10 +269,13 @@ killchild(int signo)
 static void
 suspchild(int signo)
 {
-	if (sshpid > 1) {
-		kill(sshpid, signo);
-		while (waitpid(sshpid, NULL, WUNTRACED) == -1 && errno == EINTR)
-			continue;
+	int i;
+	for (i = 0; i <= extra_channels; i++) {
+		if (sshpid[i] > 1) {
+			kill(sshpid[i], signo);
+			while (waitpid(sshpid[i], NULL, WUNTRACED) == -1 && errno == EINTR)
+				continue;
+		}
 	}
 	kill(getpid(), SIGSTOP);
 }
@@ -259,16 +296,18 @@ cmd_interrupt(int signo)
 static void
 sigchld_handler(int sig)
 {
-	int save_errno = errno;
+	int save_errno = errno, i;
 	pid_t pid;
 	const char msg[] = "\rConnection closed.  \n";
 
 	/* Report if ssh transport process dies. */
-	while ((pid = waitpid(sshpid, NULL, WNOHANG)) == -1 && errno == EINTR)
-		continue;
-	if (pid == sshpid) {
-		(void)write(STDERR_FILENO, msg, sizeof(msg) - 1);
-		sshpid = -1;
+	for (i = 0; i <= extra_channels; i++) {
+		while ((pid = waitpid(sshpid[i], NULL, WNOHANG)) == -1 && errno == EINTR)
+			continue;
+		if (pid == sshpid[i]) {
+			(void)write(STDERR_FILENO, msg, sizeof(msg) - 1);
+			sshpid[i] = -1;
+		}
 	}
 
 	errno = save_errno;
@@ -643,7 +682,7 @@ pathname_is_dir(const char *pathname)
 
 static int
 process_get(struct sftp_conn *conn, const char *src, const char *dst,
-    const char *pwd, int pflag, int rflag, int resume, int fflag)
+    const char *pwd, int pflag, int rflag, int resume, int fflag, int err_abort)
 {
 	char *abs_src = NULL;
 	char *abs_dst = NULL;
@@ -709,12 +748,12 @@ process_get(struct sftp_conn *conn, const char *src, const char *dst,
 		if (pathname_is_dir(g.gl_pathv[i]) && (rflag || global_rflag)) {
 			if (download_dir(conn, g.gl_pathv[i], abs_dst, NULL,
 			    pflag || global_pflag, 1, resume,
-			    fflag || global_fflag) == -1)
+			    fflag || global_fflag, err_abort) == -1)
 				err = -1;
 		} else {
-			if (do_download(conn, g.gl_pathv[i], abs_dst, NULL,
+			if (do_split_download(conn, g.gl_pathv[i], abs_dst, NULL,
 			    pflag || global_pflag, resume,
-			    fflag || global_fflag) == -1)
+			    fflag || global_fflag, err_abort) == -1)
 				err = -1;
 		}
 		free(abs_dst);
@@ -729,7 +768,7 @@ out:
 
 static int
 process_put(struct sftp_conn *conn, const char *src, const char *dst,
-    const char *pwd, int pflag, int rflag, int resume, int fflag)
+    const char *pwd, int pflag, int rflag, int resume, int fflag, int err_abort)
 {
 	char *tmp_dst = NULL;
 	char *abs_dst = NULL;
@@ -792,7 +831,7 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 		}
 		free(tmp);
 
-                resume |= global_aflag;
+		resume |= global_aflag;
 		if (!quiet && resume)
 			mprintf("Resuming upload of %s to %s\n",
 			    g.gl_pathv[i], abs_dst);
@@ -802,12 +841,12 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 		if (pathname_is_dir(g.gl_pathv[i]) && (rflag || global_rflag)) {
 			if (upload_dir(conn, g.gl_pathv[i], abs_dst,
 			    pflag || global_pflag, 1, resume,
-			    fflag || global_fflag) == -1)
+			    fflag || global_fflag, err_abort) == -1)
 				err = -1;
 		} else {
-			if (do_upload(conn, g.gl_pathv[i], abs_dst,
+			if (do_split_upload(conn, g.gl_pathv[i], abs_dst,
 			    pflag || global_pflag, resume,
-			    fflag || global_fflag) == -1)
+			    fflag || global_fflag, err_abort) == -1)
 				err = -1;
 		}
 	}
@@ -1567,14 +1606,14 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 		/* FALLTHROUGH */
 	case I_GET:
 		err = process_get(conn, path1, path2, *pwd, pflag,
-		    rflag, aflag, fflag);
+		    rflag, aflag, fflag, err_abort);
 		break;
 	case I_REPUT:
 		aflag = 1;
 		/* FALLTHROUGH */
 	case I_PUT:
 		err = process_put(conn, path1, path2, *pwd, pflag,
-		    rflag, aflag, fflag);
+		    rflag, aflag, fflag, err_abort);
 		break;
 	case I_RENAME:
 		path1 = make_absolute(path1, *pwd);
@@ -1784,10 +1823,11 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 	free(path2);
 
 	/* If an unignored error occurs in batch mode we should abort. */
-	if (err_abort && err != 0)
+	if (err_abort && err != 0) {
 		return (-1);
-	else if (cmdnum == I_QUIT)
+	} else if (cmdnum == I_QUIT) {
 		return (1);
+	}
 
 	return (0);
 }
@@ -2279,6 +2319,15 @@ interactive_loop(struct sftp_conn *conn, char *file1, char *file2)
 
 		err = parse_dispatch_command(conn, cmd, &remote_path,
 		    startdir, batchmode, !interactive && el == NULL);
+		while (is_thread_queue_safe_running()) {
+			pthread_mutex_lock(&queue->master_mutex);
+			pthread_cond_wait(&queue->master_condition,
+			    &queue->master_mutex);
+			pthread_mutex_unlock(&queue->master_mutex);
+		}
+		if (err == 0)
+			err = thread_queue_safe_status();
+		real_stop_progress_meter();
 		if (err != 0)
 			break;
 	}
@@ -2297,7 +2346,7 @@ interactive_loop(struct sftp_conn *conn, char *file1, char *file2)
 }
 
 static void
-connect_to_server(char *path, char **args, int *in, int *out)
+connect_to_server(char *path, char **args, int *in, int *out, int channel)
 {
 	int c_in, c_out;
 
@@ -2319,9 +2368,9 @@ connect_to_server(char *path, char **args, int *in, int *out)
 	c_in = c_out = inout[1];
 #endif /* USE_PIPES */
 
-	if ((sshpid = fork()) == -1)
+	if ((sshpid[channel] = fork()) == -1)
 		fatal("fork: %s", strerror(errno));
-	else if (sshpid == 0) {
+	else if (sshpid[channel] == 0) {
 		if ((dup2(c_in, STDIN_FILENO) == -1) ||
 		    (dup2(c_out, STDOUT_FILENO) == -1)) {
 			fprintf(stderr, "dup2: %s\n", strerror(errno));
@@ -2375,7 +2424,8 @@ usage(void)
 int
 main(int argc, char **argv)
 {
-	int in, out, ch, err, tmp, port = -1;
+	int ch, err, tmp, port = -1;
+	int in[MAX_CHANNELS], out[MAX_CHANNELS];
 	char *host = NULL, *user, *cp, *file2 = NULL;
 	int debug_level = 0, sshver = 2;
 	char *file1 = NULL, *sftp_server = NULL;
@@ -2385,10 +2435,18 @@ main(int argc, char **argv)
 	arglist args;
 	extern int optind;
 	extern char *optarg;
-	struct sftp_conn *conn;
+	struct sftp_conn *conn[MAX_CHANNELS];
 	size_t copy_buffer_len = DEFAULT_COPY_BUFLEN;
 	size_t num_requests = DEFAULT_NUM_REQUESTS;
 	long long limit_kbps = 0;
+	pthread_t threads[MAX_CHANNELS];
+
+	int channel = 0;
+	struct addrinfo *addrlist, *p = NULL;
+	struct sockaddr_in *h;
+	char channel_name[15] = "main channel";
+	struct thread_args targs[MAX_CHANNELS];
+	struct thread_order order;
 
 	/* Ensure that fds 0, 1 and 2 are open or directed to /dev/null */
 	sanitise_stdfd();
@@ -2409,7 +2467,7 @@ main(int argc, char **argv)
 	infile = stdin;
 
 	while ((ch = getopt(argc, argv,
-	    "1246afhpqrvCc:D:i:l:o:s:S:b:B:F:J:P:R:")) != -1) {
+	    "1246afhpqrvCc:D:i:l:o:s:S:b:B:F:J:P:R:n:")) != -1) {
 		switch (ch) {
 		/* Passed through to ssh(1) */
 		case '4':
@@ -2504,6 +2562,12 @@ main(int argc, char **argv)
 			ssh_program = optarg;
 			replacearg(&args, 0, "%s", ssh_program);
 			break;
+		case 'n':
+			extra_channels = strtonum(optarg, 1, MAX_CHANNELS - 1,
+			    &errstr);
+			if (errstr != NULL)
+				usage();
+			break;
 		case 'h':
 		default:
 			usage();
@@ -2565,43 +2629,340 @@ main(int argc, char **argv)
 		addargs(&args, "%s", host);
 		addargs(&args, "%s", (sftp_server != NULL ?
 		    sftp_server : "sftp"));
-
-		connect_to_server(ssh_program, args.list, &in, &out);
 	} else {
 		args.list = NULL;
 		addargs(&args, "sftp-server");
+	}
 
-		connect_to_server(sftp_direct, args.list, &in, &out);
+	addrlist = resolve_host(host);
+	p = random_host(addrlist);
+	queue = thread_queue_create(10 * extra_channels);
+
+	for (channel = 0; channel <= extra_channels; channel++) {
+		if (channel) {
+			sprintf(channel_name, "channel %d", channel);
+		}
+		in[channel] = -1;
+		out[channel] = -1;
+		if (sftp_direct == NULL) {
+			if (p == NULL) {
+				p = addrlist;
+			}
+			h = (struct sockaddr_in *) p->ai_addr;
+			replacearg(&args, args.num - 2, "%s",
+			    inet_ntoa(h->sin_addr));
+			p = p->ai_next;
+			connect_to_server(ssh_program, args.list, &in[channel],
+			    &out[channel], channel);
+		} else {
+			fprintf(stderr, "direct\n");
+			connect_to_server(sftp_direct, args.list, &in[channel],
+			    &out[channel], channel);
+		}
+
+		conn[channel] = do_init(in[channel], out[channel],
+		    copy_buffer_len, num_requests, limit_kbps);
+		if (conn[channel] == NULL)
+			fatal("Couldn't initialise connection to server");
+
+		if (channel) {
+			targs[channel].conn = conn[channel];
+			targs[channel].channel = channel;
+			pthread_create(&threads[channel], NULL, thread_loop,
+			    &targs[channel]);
+		}
+
+		if (!quiet) {
+			if (sftp_direct == NULL)
+				fprintf(stderr, "Connected %s to %s (%s).\n",
+				    channel_name , host,
+				    inet_ntoa(h->sin_addr));
+			else
+				fprintf(stderr, "Attached to %s.\n",
+				    sftp_direct);
+		}
 	}
 	freeargs(&args);
 
-	conn = do_init(in, out, copy_buffer_len, num_requests, limit_kbps);
-	if (conn == NULL)
-		fatal("Couldn't initialise connection to server");
+	// main loop starts here
+	err = interactive_loop(conn[0], file1, file2);
 
-	if (!quiet) {
-		if (sftp_direct == NULL)
-			fprintf(stderr, "Connected to %s.\n", host);
-		else
-			fprintf(stderr, "Attached to %s.\n", sftp_direct);
+	for (channel = 1; channel <= extra_channels; channel++) {
+		order.func = "quit";
+		thread_queue_safe_enqueue(order);
 	}
-
-	err = interactive_loop(conn, file1, file2);
-
+	for (channel = 0; channel <= extra_channels; channel++) {
+		if (channel) {
+			pthread_join(threads[channel], NULL);
+		}
 #if !defined(USE_PIPES)
-	shutdown(in, SHUT_RDWR);
-	shutdown(out, SHUT_RDWR);
+		shutdown(in[channel], SHUT_RDWR);
+		shutdown(out[channel], SHUT_RDWR);
 #endif
 
-	close(in);
-	close(out);
+		close(in[channel]);
+		close(out[channel]);
+	}
 	if (batchmode)
 		fclose(infile);
 
-	while (waitpid(sshpid, NULL, 0) == -1 && sshpid > 1)
-		if (errno != EINTR)
-			fatal("Couldn't wait for ssh process: %s",
-			    strerror(errno));
+	for (channel = 0; channel <= extra_channels; channel++) {
+		while (waitpid(sshpid[channel], NULL, 0) == -1 &&
+		    sshpid[channel] > 1)
+			if (errno != EINTR)
+				fatal("Couldn't wait for ssh process: %s",
+				    strerror(errno));
+	}
 
 	exit(err == 0 ? 0 : 1);
+}
+
+void
+thread_queue_safe_enqueue(struct thread_order order)
+{
+	int done = 0;
+
+	pthread_mutex_lock(&queue->data_mutex);
+	if (!is_thread_queue_full()) {
+		thread_queue_enqueue(order);
+		done = 1;
+	}
+	pthread_mutex_unlock (&queue->data_mutex);
+
+	while (!done) {
+		pthread_mutex_lock(&queue->master_mutex);
+		pthread_cond_wait(&queue->master_condition,
+		    &queue->master_mutex);
+		pthread_mutex_unlock(&queue->master_mutex);
+
+		pthread_mutex_lock(&queue->data_mutex);
+		if (!is_thread_queue_full()) {
+			thread_queue_enqueue(order);
+			done = 1;
+		}
+		pthread_mutex_unlock(&queue->data_mutex);
+	}
+
+	pthread_mutex_lock (&queue->slaves_mutex);
+	pthread_cond_broadcast (&queue->slaves_condition);
+	pthread_mutex_unlock (&queue->slaves_mutex);
+}
+
+void
+thread_queue_safe_done(int err)
+{
+	pthread_mutex_lock(&queue->data_mutex);
+	queue->running = queue->running - 1;
+	if (queue->err == 0 && err != 0)
+		queue->err = err;
+	pthread_mutex_unlock (&queue->data_mutex);
+}
+
+unsigned
+is_thread_queue_safe_running()
+{
+	int running;
+
+	pthread_mutex_lock(&queue->data_mutex);
+	running = queue->running;
+	if (running == 0 && is_thread_queue_empty() == 0) {
+		running = 1;
+	}
+	pthread_mutex_unlock (&queue->data_mutex);
+
+	return running;
+}
+
+int
+thread_queue_safe_status()
+{
+	int err;
+
+	pthread_mutex_lock(&queue->data_mutex);
+	err = queue->err;
+	queue->err = 0;
+	pthread_mutex_unlock (&queue->data_mutex);
+
+	return err;
+}
+
+void *
+thread_loop(void *args)
+{
+	struct thread_args *targs = args;
+
+	while(1) {
+		while (1) {
+			if (thread_real_loop(targs) != 0)
+				break;
+		}
+
+		pthread_mutex_lock(&queue->slaves_mutex);
+		pthread_cond_wait(&queue->slaves_condition,
+		    &queue->slaves_mutex);
+		pthread_mutex_unlock(&queue->slaves_mutex);
+	}
+
+	pthread_exit(NULL);
+}
+
+int
+thread_real_loop(struct thread_args *targs)
+{
+	struct thread_order order;
+	char *path, *dir;
+	int err;
+
+	pthread_mutex_lock(&queue->data_mutex);
+	if (is_thread_queue_empty()) {
+		pthread_mutex_unlock(&queue->data_mutex);
+		return -1;
+	}
+	order = thread_queue_dequeue();
+	err = queue->err;
+	debug("thread %d: dequeued %s (queue size %d)", targs->channel,
+	    order.func, queue->size);
+	pthread_mutex_unlock(&queue->data_mutex);
+
+	pthread_mutex_lock(&queue->master_mutex);
+	pthread_cond_signal(&queue->master_condition);
+	pthread_mutex_unlock(&queue->master_mutex);
+
+	if (strcmp(order.func, "do_download") == 0) {
+		if (err == 0)
+			err = do_download(targs->conn, order.remote_path,
+			    order.local_path, order.a, order.preserve_flag,
+			    order.resume_flag, order.fsync_flag, targs->channel,
+			    order.chunk_start, order.chunk_end);
+		if (order.err_abort == 0)
+			err = 0;
+		thread_queue_safe_done(err);
+	} else if (strcmp(order.func, "do_upload") == 0) {
+		if (err == 0) {
+			if (order.chunk_start || order.chunk_end) {
+				wait_availability(targs->conn, targs->channel,
+				    order.remote_path);
+			} else {
+				path = (char *)
+				    malloc(strlen(order.remote_path));
+				strcpy(path, order.remote_path);
+				dir = dirname(path);
+				wait_availability(targs->conn, targs->channel,
+				    dir);
+				free(path);
+			}
+			err = do_upload(targs->conn, order.local_path,
+			    order.remote_path, order.preserve_flag,
+			    order.resume_flag, order.fsync_flag, targs->channel,
+			    order.chunk_start, order.chunk_end);
+			if (order.err_abort == 0)
+				err = 0;
+		}
+		thread_queue_safe_done(err);
+	} else if (strcmp(order.func, "quit") == 0) {
+		/* received order to exit */
+		pthread_exit(NULL);
+	}
+
+	pthread_mutex_lock(&queue->master_mutex);
+	pthread_cond_signal(&queue->master_condition);
+	pthread_mutex_unlock(&queue->master_mutex);
+
+	return 0;
+}
+
+struct thread_queue *
+thread_queue_create(unsigned capacity)
+{
+	struct thread_queue *new_queue = (struct thread_queue *)
+	    malloc(sizeof(struct thread_queue));
+
+	new_queue->capacity = capacity;
+	new_queue->front = new_queue->size = 0;
+	new_queue->rear = capacity - 1;
+	new_queue->running = 0;
+	new_queue->err = 0;
+	new_queue->orders = (struct thread_order *)
+	    malloc(new_queue->capacity * sizeof(struct thread_order));
+	pthread_mutex_init(&new_queue->data_mutex, NULL);
+	pthread_mutex_init(&new_queue->master_mutex, NULL);
+	pthread_mutex_init(&new_queue->slaves_mutex, NULL);
+	pthread_cond_init(&new_queue->master_condition, NULL);
+	pthread_cond_init(&new_queue->slaves_condition, NULL);
+	return new_queue;
+}
+
+int
+is_thread_queue_full()
+{
+	return (queue->size == queue->capacity);
+}
+
+int
+is_thread_queue_empty()
+{
+	return (queue->size == 0);
+}
+
+void
+thread_queue_enqueue(struct thread_order order)
+{
+	queue->rear = (queue->rear + 1)%queue->capacity;
+	queue->orders[queue->rear] = order;
+	queue->size = queue->size + 1;
+	debug("%s enqueued (size %d)", order.func, queue->size);
+}
+
+struct thread_order
+thread_queue_dequeue()
+{
+	struct thread_order order = queue->orders[queue->front];
+
+	queue->front = (queue->front + 1)%queue->capacity;
+	queue->size = queue->size - 1;
+	queue->running = queue->running + 1;
+	return order;
+}
+
+/*
+ * Attempt to resolve a host name / port to a set of addresses.
+ * Returns NULL on failure.
+ */
+struct addrinfo *
+resolve_host(const char *name)
+{
+	char strport[NI_MAXSERV];
+	struct addrinfo hints, *res;
+	int gaierr, port = 22;
+
+	snprintf(strport, sizeof strport, "%d", port);
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	if ((gaierr = getaddrinfo(name, strport, &hints, &res)) != 0) {
+		return NULL;
+	}
+	return res;
+}
+
+struct addrinfo *
+random_host(struct addrinfo *start)
+{
+	struct addrinfo *p = start;
+	int r, n = 0;
+
+	while (p != NULL) {
+		p = p->ai_next;
+		n++;
+	}
+
+	srand(time(NULL));
+	r = rand()%n;
+
+	p = start;
+	for (n = 0; n < r; n++) {
+		p = p->ai_next;
+	}
+
+	return p;
 }
