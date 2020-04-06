@@ -1,0 +1,52 @@
+--- openssh-9.3p1/openbsd-compat/openssl-compat.c	2023-03-15 22:28:19.000000000 +0100
++++ /home/dbelyavs/work/upstream/openssh-portable/openbsd-compat/openssl-compat.c	2023-05-25 14:19:42.870841944 +0200
+@@ -33,10 +33,10 @@
+ 
+ /*
+  * OpenSSL version numbers: MNNFFPPS: major minor fix patch status
+- * We match major, minor, fix and status (not patch) for <1.0.0.
+- * After that, we acceptable compatible fix versions (so we
+- * allow 1.0.1 to work with 1.0.0). Going backwards is only allowed
+- * within a patch series.
++ * Versions >=3 require only major versions to match.
++ * For versions <3, we accept compatible fix versions (so we allow 1.0.1
++ * to work with 1.0.0). Going backwards is only allowed within a patch series.
++ * See https://www.openssl.org/policies/releasestrat.html
+  */
+ 
+ int
+@@ -48,15 +48,17 @@
+ 	if (headerver == libver)
+ 		return 1;
+ 
+-	/* for versions < 1.0.0, major,minor,fix,status must match */
+-	if (headerver < 0x1000000f) {
+-		mask = 0xfffff00fL; /* major,minor,fix,status */
++	/*
++	 * For versions >= 3.0, only the major and status must match.
++	 */
++	if (headerver >= 0x3000000f) {
++		mask = 0xf000000fL; /* major,status */
+ 		return (headerver & mask) == (libver & mask);
+ 	}
+ 
+ 	/*
+-	 * For versions >= 1.0.0, major,minor,status must match and library
+-	 * fix version must be equal to or newer than the header.
++	 * For versions >= 1.0.0, but <3, major,minor,status must match and
++	 * library fix version must be equal to or newer than the header.
+ 	 */
+ 	mask = 0xfff0000fL; /* major,minor,status */
+ 	hfix = (headerver & 0x000ff000) >> 12;
+diff -up openssh-8.7p1/configure.ac.check openssh-8.7p1/configure.ac
+--- openssh-8.7p1/configure.ac.check	2023-11-27 14:54:32.959113758 +0100
++++ openssh-8.7p1/configure.ac	2023-11-27 14:54:49.467500523 +0100
+@@ -2821,7 +2821,7 @@ if test "x$openssl" = "xyes" ; then
+ 				;;
+ 			101*)   ;; # 1.1.x
+ 			200*)   ;; # LibreSSL
+-			300*)   ;; # OpenSSL development branch.
++			30*)   ;; # OpenSSL 3.x series
+ 		        *)
+ 				AC_MSG_ERROR([Unknown/unsupported OpenSSL version ("$ssl_library_ver")])
+ 		                ;;

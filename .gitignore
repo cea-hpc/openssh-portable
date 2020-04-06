@@ -33,4 +33,5 @@ ssh-sk-helper
 sshd
 !regress/misc/fuzz-harness/Makefile
 !regress/unittests/sshsig/Makefile
+!regress/docker/almalinux-image/ssh
 tags

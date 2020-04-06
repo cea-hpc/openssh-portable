@@ -270,3 +270,8 @@ unit:
 			$$V ${.OBJDIR}/unittests/utf8/test_utf8 ; \
 		fi \
 	fi
+
+t-docker:
+	cd ${.OBJDIR}/docker || exit $$?; \
+	echo running docker tests ; \
+	bash run.sh

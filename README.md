@@ -1,8 +1,5 @@
 # Portable OpenSSH
 
-[![C/C++ CI](https://github.com/openssh/openssh-portable/actions/workflows/c-cpp.yml/badge.svg)](https://github.com/openssh/openssh-portable/actions/workflows/c-cpp.yml)
-[![Fuzzing Status](https://oss-fuzz-build-logs.storage.googleapis.com/badges/openssh.svg)](https://bugs.chromium.org/p/oss-fuzz/issues/list?sort=-opened&can=1&q=proj:openssh)
-
 OpenSSH is a complete implementation of the SSH protocol (version 2) for secure remote login, command execution and file transfer. It includes a client ``ssh`` and server ``sshd``, file transfer utilities ``scp`` and ``sftp`` as well as tools for key generation (``ssh-keygen``), run-time key storage (``ssh-agent``) and a number of supporting programs.
 
 This is a port of OpenBSD's [OpenSSH](https://openssh.com) to most Unix-like operating systems, including Linux, OS X and Cygwin. Portable OpenSSH polyfills OpenBSD APIs that are not available elsewhere, adds sshd sandboxing for more operating systems and includes support for OS-native authentication and auditing (e.g. using PAM).
@@ -19,6 +16,28 @@ The official documentation for OpenSSH are the man pages for each tool:
 * [sftp(1)](https://man.openbsd.org/sftp.1)
 * [ssh-keyscan(8)](https://man.openbsd.org/ssh-keyscan.8)
 * [sftp-server(8)](https://man.openbsd.org/sftp-server.8)
+
+## Parallel SFTP
+
+This version of sftp has an additional option:
+
+Flag | Meaning
+--- | ---
+``-n extra_channels`` | Sets the number of extra ssh channels used by get and put. Defaults to 0. Maximum value is 63. If set to a value > 0, get and put will be made by these extra channels in parallel. If destination resolves to multiple addresses, ssh connections are dispatched between these addresses.
+
+RPMs and SRPMs are available in the [releases page](https://github.com/cea-hpc/openssh-portable/releases).
+
+In order to only compile parallel-sftp:
+
+```
+git clone https://github.com/cea-hpc/openssh-portable
+cd openssh-portable
+git checkout V_8_7_P1_parallel
+autoreconf
+./configure # [options]
+make sftp
+mv sftp parallel-sftp # now you can install the parallel-sftp binary in your path
+```
 
 ## Stable Releases
 
