@@ -257,7 +257,8 @@ start_progress_meter(const char *f, off_t filesize, off_t *ctr, int channel)
 	if (progress_started) {
 		if (channel > progress_started)
 			progress_started = channel;
-		file = f;
+		free((void *) file);
+		file = strdup(f);
 		end_pos += filesize;
 		counter[channel] = ctr;
 		progress_channels[channel] = 1;
@@ -267,7 +268,7 @@ start_progress_meter(const char *f, off_t filesize, off_t *ctr, int channel)
 		}
 		progress_started = channel;
 		total_done = 0;
-		file = f;
+		file = strdup(f);
 		start = last_update = monotime_double();
 		start_pos = *ctr;
 		end_pos = filesize;
@@ -304,6 +305,7 @@ stop_progress_meter(int channel)
 	if (channel == 0) {
 		atomicio(vwrite, STDOUT_FILENO, "\n", 1);
 		progress_started = 0;
+		free((void *) file);
 	}
 }
 
@@ -318,6 +320,7 @@ real_stop_progress_meter(void)
 
 		atomicio(vwrite, STDOUT_FILENO, "\n", 1);
 		progress_started = 0;
+		free((void *) file);
 	}
 }
 

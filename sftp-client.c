@@ -1274,23 +1274,25 @@ send_read_request(struct sftp_conn *conn, u_int id, u_int64_t offset,
 
 int
 do_split_download(struct sftp_conn *conn, const char *remote_path,
-    const char *local_path, Attrib *aa, int preserve_flag, int resume_flag,
+    const char *local_path, Attrib *a, int preserve_flag, int resume_flag,
     int fsync_flag, int err_abort)
 {
 	int nb_chunks, i;
 	u_int status = SSH2_FX_OK;
 	off_t size, chunk_size;
 	struct thread_order order;
-	Attrib *a = NULL;
+	Attrib *aa = NULL;
 
 	if (extra_channels == 0)
 		return do_download(conn, remote_path, local_path, a,
 		    preserve_flag, resume_flag, fsync_flag, 0, 0, 0);
 
+/*
 	if (aa != NULL) {
 		a = (Attrib *) malloc(sizeof(Attrib));
 		memcpy(a, aa, sizeof(Attrib));
-	} else if ((a = do_stat(conn, remote_path, 0)) == NULL)
+*/
+	if (a == NULL && (a = do_stat(conn, remote_path, 0)) == NULL)
 		return -1;
 
 	if ((a->flags & SSH2_FILEXFER_ATTR_PERMISSIONS) &&
@@ -1319,7 +1321,9 @@ do_split_download(struct sftp_conn *conn, const char *remote_path,
 			order.func = "do_download";
 			order.remote_path = strdup(remote_path);
 			order.local_path = strdup(local_path);
-			order.a = a;
+			aa = (Attrib *) malloc(sizeof(Attrib));
+			memcpy(aa, a, sizeof(Attrib));
+			order.a = aa;
 			order.preserve_flag = preserve_flag;
 			order.resume_flag = 0;
 			order.fsync_flag = fsync_flag;
@@ -1335,7 +1339,9 @@ do_split_download(struct sftp_conn *conn, const char *remote_path,
 		order.func = "do_download";
 		order.remote_path = strdup(remote_path);
 		order.local_path = strdup(local_path);
-		order.a = a;
+		aa = (Attrib *) malloc(sizeof(Attrib));
+		memcpy(aa, a, sizeof(Attrib));
+		order.a = aa;
 		order.preserve_flag = preserve_flag;
 		order.resume_flag = resume_flag;
 		order.fsync_flag = fsync_flag;

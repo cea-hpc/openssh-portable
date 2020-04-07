@@ -2692,6 +2692,7 @@ main(int argc, char **argv)
 				    sftp_direct);
 		}
 	}
+	freeaddrinfo(addrlist);
 	freeargs(&args);
 
 	// main loop starts here
@@ -2713,6 +2714,8 @@ main(int argc, char **argv)
 		close(in[channel]);
 		close(out[channel]);
 	}
+	free(queue->orders);
+	free(queue);
 	if (batchmode)
 		fclose(infile);
 
@@ -2839,13 +2842,17 @@ thread_real_loop(struct thread_args *targs)
 	pthread_mutex_unlock(&queue->master_mutex);
 
 	if (strcmp(order.func, "do_download") == 0) {
-		if (err == 0)
+		if (err == 0) {
 			err = do_download(targs->conn, order.remote_path,
 			    order.local_path, order.a, order.preserve_flag,
 			    order.resume_flag, order.fsync_flag, targs->channel,
 			    order.chunk_start, order.chunk_end);
-		if (order.err_abort == 0)
-			err = 0;
+			if (order.err_abort == 0)
+				err = 0;
+		}
+		free((void *) order.remote_path);
+		free((void *) order.local_path);
+		free((void *) order.a);
 		thread_queue_safe_done(err);
 	} else if (strcmp(order.func, "do_upload") == 0) {
 		if (err == 0) {
@@ -2853,9 +2860,7 @@ thread_real_loop(struct thread_args *targs)
 				wait_availability(targs->conn, targs->channel,
 				    order.remote_path);
 			} else {
-				path = (char *)
-				    malloc(strlen(order.remote_path));
-				strcpy(path, order.remote_path);
+				path = strdup(order.remote_path);
 				dir = dirname(path);
 				wait_availability(targs->conn, targs->channel,
 				    dir);
@@ -2868,9 +2873,12 @@ thread_real_loop(struct thread_args *targs)
 			if (order.err_abort == 0)
 				err = 0;
 		}
+		free((void *) order.remote_path);
+		free((void *) order.local_path);
 		thread_queue_safe_done(err);
 	} else if (strcmp(order.func, "quit") == 0) {
 		/* received order to exit */
+		free(targs->conn);
 		pthread_exit(NULL);
 	}
 
