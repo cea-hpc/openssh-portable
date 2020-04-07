@@ -6,6 +6,7 @@ tid="sftp permissions"
 SERVER_LOG=${OBJ}/sftp-server.log
 CLIENT_LOG=${OBJ}/sftp.log
 TEST_SFTP_SERVER=${OBJ}/sftp-server.sh
+EXTRA_CHANNELS="0 2"
 
 prepare_server() {
 	printf "#!/bin/sh\nexec $SFTPSERVER -el debug3 $* 2>$SERVER_LOG\n" \
@@ -14,7 +15,9 @@ prepare_server() {
 }
 
 run_client() {
-	echo "$@" | ${SFTP} -D ${TEST_SFTP_SERVER} -vvvb - >$CLIENT_LOG 2>&1
+	_n=$1
+	shift
+	echo "$@" | ${SFTP} -D ${TEST_SFTP_SERVER} -n $_n -vvvb - >$CLIENT_LOG 2>&1
 }
 
 prepare_files() {
@@ -38,17 +41,19 @@ ro_test() {
 	_prep="$3"
 	_expect_success_post="$4"
 	_expect_fail_post="$5"
-	verbose "$tid: read-only $_desc"
-	# Plain (no options, mostly to test that _cmd is good)
-	prepare_files "$_prep"
-	prepare_server
-	run_client "$_cmd" || fail "plain $_desc failed"
-	postcondition "$_desc no-readonly" "$_expect_success_post"
-	# Read-only enabled
-	prepare_files "$_prep"
-	prepare_server -R
-	run_client "$_cmd" && fail "read-only $_desc succeeded"
-	postcondition "$_desc readonly" "$_expect_fail_post"
+	for N in $EXTRA_CHANNELS; do
+		verbose "$tid: read-only $_desc (extra_channels: $N)"
+		# Plain (no options, mostly to test that _cmd is good)
+		prepare_files "$_prep"
+		prepare_server
+		run_client $N "$_cmd" || fail "plain $_desc failed"
+		postcondition "$_desc no-readonly" "$_expect_success_post"
+		# Read-only enabled
+		prepare_files "$_prep"
+		prepare_server -R
+		run_client $N "$_cmd" && fail "read-only $_desc succeeded"
+		postcondition "$_desc readonly" "$_expect_fail_post"
+	done
 }
 
 perm_test() {
@@ -58,27 +63,29 @@ perm_test() {
 	_prep="$4"
 	_expect_success_post="$5"
 	_expect_fail_post="$6"
-	verbose "$tid: explicit $_op"
-	# Plain (no options, mostly to test that _cmd is good)
-	prepare_files "$_prep"
-	prepare_server
-	run_client "$_cmd" || fail "plain $_op failed"
-	postcondition "$_op no white/blacklists" "$_expect_success_post"
-	# Whitelist
-	prepare_files "$_prep"
-	prepare_server -p $_op,$_whitelist_ops
-	run_client "$_cmd" || fail "whitelisted $_op failed"
-	postcondition "$_op whitelisted" "$_expect_success_post"
-	# Blacklist
-	prepare_files "$_prep"
-	prepare_server -P $_op
-	run_client "$_cmd" && fail "blacklisted $_op succeeded"
-	postcondition "$_op blacklisted" "$_expect_fail_post"
-	# Whitelist with op missing.
-	prepare_files "$_prep"
-	prepare_server -p $_whitelist_ops
-	run_client "$_cmd" && fail "no whitelist $_op succeeded"
-	postcondition "$_op not in whitelist" "$_expect_fail_post"
+	for N in $EXTRA_CHANNELS; do
+		verbose "$tid: explicit $_op (extra_channels: $N)"
+		# Plain (no options, mostly to test that _cmd is good)
+		prepare_files "$_prep"
+		prepare_server
+		run_client $N "$_cmd" || fail "plain $_op failed"
+		postcondition "$_op no white/blacklists" "$_expect_success_post"
+		# Whitelist
+		prepare_files "$_prep"
+		prepare_server -p $_op,$_whitelist_ops
+		run_client $N "$_cmd" || fail "whitelisted $_op failed"
+		postcondition "$_op whitelisted" "$_expect_success_post"
+		# Blacklist
+		prepare_files "$_prep"
+		prepare_server -P $_op
+		run_client $N "$_cmd" && fail "blacklisted $_op succeeded"
+		postcondition "$_op blacklisted" "$_expect_fail_post"
+		# Whitelist with op missing.
+		prepare_files "$_prep"
+		prepare_server -p $_whitelist_ops
+		run_client $N "$_cmd" && fail "no whitelist $_op succeeded"
+		postcondition "$_op not in whitelist" "$_expect_fail_post"
+	done
 }
 
 ro_test \

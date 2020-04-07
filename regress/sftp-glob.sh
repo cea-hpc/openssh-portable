@@ -2,6 +2,7 @@
 #	Placed in the Public Domain.
 
 tid="sftp glob"
+extra_channels="0 2"
 
 config_defined FILESYSTEM_NO_BACKSLASH && nobs="not supported on this platform"
 
@@ -11,29 +12,31 @@ sftp_ls() {
 	expected=$3
 	unexpected=$4
 	skip=$5
-	if test "x$skip" != "x" ; then
-		verbose "$tid: $errtag (skipped: $skip)"
-		return
-	fi
-	verbose "$tid: $errtag"
-	printf "ls -l %s" "${target}" | \
-		${SFTP} -b - -D ${SFTPSERVER} 2>/dev/null | \
-		grep -v "^sftp>" > ${RESULTS}
-	if [ $? -ne 0 ]; then
-		fail "$errtag failed"
-	fi
-	if test "x$expected" != "x" ; then
-	    if fgrep "$expected" ${RESULTS} >/dev/null 2>&1 ; then
-		:
-	    else
-		fail "$expected missing from $errtag results"
-	    fi
-	fi
-	if test "x$unexpected" != "x" && \
-	   fgrep "$unexpected" ${RESULTS} >/dev/null 2>&1 ; then
-		fail "$unexpected present in $errtag results"
-	fi
-	rm -f ${RESULTS}
+	for N in $extra_channels; do
+		if test "x$skip" != "x" ; then
+			verbose "$tid: $errtag (skipped: $skip)"
+			return
+		fi
+		verbose "$tid: $errtag (extra_channels: $N)"
+		printf "ls -l %s" "${target}" | \
+			${SFTP} -b - -D ${SFTPSERVER} -n $N 2>/dev/null | \
+			grep -v "^sftp>" > ${RESULTS}
+		if [ $? -ne 0 ]; then
+			fail "$errtag failed"
+		fi
+		if test "x$expected" != "x" ; then
+			if fgrep "$expected" ${RESULTS} >/dev/null 2>&1 ; then
+			:
+			else
+			fail "$expected missing from $errtag results"
+			fi
+		fi
+		if test "x$unexpected" != "x" && \
+		   fgrep "$unexpected" ${RESULTS} >/dev/null 2>&1 ; then
+			fail "$unexpected present in $errtag results"
+		fi
+		rm -f ${RESULTS}
+	done
 }
 
 BASE=${OBJ}/glob
