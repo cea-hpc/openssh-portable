@@ -79,9 +79,10 @@ static volatile sig_atomic_t alarm_fired;
 /* units for format_size */
 static const char unit[] = " KMGT";
 
-int progress_started = 0;	/* number of progresses started in parallel */
+int progress_started = -1;	/* number of progresses started in parallel */
 static off_t total_done;	/* sum of the size of transferred chunks */
 int progress_channels[MAX_CHANNELS];	/* state of each progress channel */
+extern int extra_channels;	/* numbmer of extra channels (-n option) */
 
 static int
 can_output(void)
@@ -254,7 +255,7 @@ start_progress_meter(const char *f, off_t filesize, off_t *ctr, int channel)
 {
 	int i;
 
-	if (progress_started) {
+	if (progress_started != -1) {
 		if (channel > progress_started)
 			progress_started = channel;
 		free((void *) file);
@@ -302,9 +303,9 @@ stop_progress_meter(int channel)
 	if (cur_pos != end_pos)
 		refresh_progress_meter(1);
 
-	if (channel == 0) {
+	if (channel == 0 && extra_channels == 0) {
 		atomicio(vwrite, STDOUT_FILENO, "\n", 1);
-		progress_started = 0;
+		progress_started = -1;
 		free((void *) file);
 	}
 }
@@ -312,14 +313,14 @@ stop_progress_meter(int channel)
 void
 real_stop_progress_meter(void)
 {
-	if (progress_started) {
+	if (progress_started != -1) {
 		alarm(0);
 
 		if (!can_output())
 			return;
 
 		atomicio(vwrite, STDOUT_FILENO, "\n", 1);
-		progress_started = 0;
+		progress_started = -1;
 		free((void *) file);
 	}
 }

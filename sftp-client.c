@@ -38,6 +38,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1279,7 +1280,7 @@ do_split_download(struct sftp_conn *conn, const char *remote_path,
 {
 	int nb_chunks, i;
 	u_int status = SSH2_FX_OK;
-	off_t size, chunk_size;
+	off_t size, chunk_size, sparse_start;
 	struct thread_order order;
 	Attrib *aa = NULL;
 
@@ -1305,18 +1306,21 @@ do_split_download(struct sftp_conn *conn, const char *remote_path,
 		size = (off_t)a->size;
 	else
 		size = 0;
-	if (size > base_chunk_size * 2) {
-		do_download(conn, remote_path, local_path, a, preserve_flag,
-			resume_flag, fsync_flag, 0, size - 10, 0);
+	if (size > base_chunk_size) {
 		if (size <= base_chunk_size * extra_channels) {
 			chunk_size = base_chunk_size;
 		} else {
-			chunk_size = size / extra_channels / base_chunk_size *
-			    base_chunk_size;
+			chunk_size = (off_t) round((double) size /
+			    (double) extra_channels / (double) base_chunk_size)
+			    * base_chunk_size;
 		}
-		nb_chunks = size / chunk_size;
+		nb_chunks = (int) round((double) size / (double) chunk_size);
 		if (nb_chunks > extra_channels)
 			nb_chunks = extra_channels;
+		sparse_start = (size - 1) / conn->transfer_buflen *
+		    conn->transfer_buflen;
+		do_download(conn, remote_path, local_path, a, preserve_flag,
+		    resume_flag, fsync_flag, 0, sparse_start, 0);
 		for (i = 0; i < nb_chunks; i++) {
 			order.func = "do_download";
 			order.remote_path = strdup(remote_path);
@@ -1330,7 +1334,7 @@ do_split_download(struct sftp_conn *conn, const char *remote_path,
 			order.err_abort = err_abort;
 			order.chunk_start = i * chunk_size;
 			if (i == nb_chunks - 1)
-				order.chunk_end = 0;
+				order.chunk_end = sparse_start - 1;
 			else
 				order.chunk_end = (i + 1) * chunk_size - 1;
 			thread_queue_safe_enqueue(order);
@@ -1499,13 +1503,11 @@ failchunk:
 	}
 
 	if (chunk_end) {
-		progress_filesize = chunk_end - chunk_start + 1;
-	} else if (chunk_start) {
-		progress_filesize = size - chunk_start;
+		progress_filesize = 0;
 	} else {
 		progress_filesize = size;
 	}
-	if (showprogress && size != 0 && (channel || extra_channels == 0))
+	if (showprogress && size != 0)
 		start_progress_meter(remote_path, progress_filesize,
 		    &progress_counter, channel);
 
@@ -1634,7 +1636,7 @@ failchunk:
 		}
 	}
 
-	if (showprogress && size && (channel || extra_channels == 0))
+	if (showprogress && size)
 		stop_progress_meter(channel);
 
 	/* Sanity check */
@@ -1823,7 +1825,7 @@ do_split_upload(struct sftp_conn *conn, const char *local_path,
 	struct stat sb;
 	Attrib a;
 	struct thread_order order;
-	off_t chunk_size;
+	off_t chunk_size, sparse_start;
 
 	if (extra_channels == 0)
 		return do_upload(conn, local_path, remote_path, preserve_flag,
@@ -1859,18 +1861,21 @@ do_split_upload(struct sftp_conn *conn, const char *local_path,
 	if (!preserve_flag)
 		a.flags &= ~SSH2_FILEXFER_ATTR_ACMODTIME;
 
-	if (sb.st_size >= base_chunk_size * 2) {
-		do_upload(conn, local_path, remote_path, preserve_flag, resume,
-			fsync_flag, 0, sb.st_size - 10, 0);
+	if (sb.st_size > base_chunk_size) {
 		if (sb.st_size <= base_chunk_size * extra_channels) {
 			chunk_size = base_chunk_size;
 		} else {
-			chunk_size = sb.st_size / extra_channels /
-			    base_chunk_size * base_chunk_size;
+			chunk_size = (off_t) round((double) sb.st_size /
+			    (double) extra_channels / (double) base_chunk_size)
+			    * base_chunk_size;
 		}
-		nb_chunks = sb.st_size / chunk_size;
+		nb_chunks = (int) round((double) sb.st_size / (double) chunk_size);
 		if (nb_chunks > extra_channels)
 			nb_chunks = extra_channels;
+		sparse_start = (sb.st_size - 1) / conn->transfer_buflen *
+		    conn->transfer_buflen;
+		do_upload(conn, local_path, remote_path, preserve_flag, resume,
+		    fsync_flag, 0, sparse_start, 0);
 		for (i = 0; i < nb_chunks; i++) {
 			order.func = "do_upload";
 			order.remote_path = strdup(remote_path);
@@ -1881,7 +1886,7 @@ do_split_upload(struct sftp_conn *conn, const char *local_path,
 			order.err_abort = err_abort;
 			order.chunk_start = i * chunk_size;
 			if (i == nb_chunks - 1)
-				order.chunk_end = 0;
+				order.chunk_end = sparse_start - 1;
 			else
 				order.chunk_end = (i + 1) * chunk_size - 1;
 			thread_queue_safe_enqueue(order);
@@ -2040,13 +2045,11 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 		offset = progress_counter = 0;
 	}
 	if (chunk_end) {
-		progress_filesize = chunk_end - chunk_start + 1;
-	} else if (chunk_start) {
-		progress_filesize = sb.st_size - chunk_start;
+		progress_filesize = 0;
 	} else {
 		progress_filesize = sb.st_size;
 	}
-	if (showprogress && (channel || extra_channels == 0))
+	if (showprogress)
 		start_progress_meter(local_path, progress_filesize,
 		    &progress_counter, channel);
 
@@ -2138,7 +2141,7 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 	}
 	sshbuf_free(msg);
 
-	if (showprogress && (channel || extra_channels == 0))
+	if (showprogress)
 		stop_progress_meter(channel);
 	free(data);
 

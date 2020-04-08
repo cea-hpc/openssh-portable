@@ -2444,7 +2444,7 @@ main(int argc, char **argv)
 	pthread_t threads[MAX_CHANNELS];
 
 	int channel = 0;
-	struct addrinfo *addrlist, *p = NULL;
+	struct addrinfo *addrlist = NULL, *p = NULL;
 	struct sockaddr_in *h = NULL;
 	char channel_name[15] = "main channel";
 	struct thread_args targs[MAX_CHANNELS];
@@ -2636,11 +2636,10 @@ main(int argc, char **argv)
 		addargs(&args, "sftp-server");
 	}
 
-	addrlist = resolve_host(host);
 	if (extra_channels) {
-		if (addrlist == NULL)
-			fatal("Could not resolve hostname %s", host);
-		p = random_host(addrlist);
+		addrlist = resolve_host(host);
+		if (addrlist != NULL)
+			p = random_host(addrlist);
 		queue = thread_queue_create(10 * extra_channels);
 	}
 
@@ -2651,7 +2650,7 @@ main(int argc, char **argv)
 		in[channel] = -1;
 		out[channel] = -1;
 		if (sftp_direct == NULL) {
-			if (extra_channels) {
+			if (extra_channels && addrlist != NULL) {
 				if (p == NULL) {
 					p = addrlist;
 				}
@@ -2714,8 +2713,10 @@ main(int argc, char **argv)
 		close(in[channel]);
 		close(out[channel]);
 	}
-	free(queue->orders);
-	free(queue);
+	if (extra_channels) {
+		free(queue->orders);
+		free(queue);
+	}
 	if (batchmode)
 		fclose(infile);
 
