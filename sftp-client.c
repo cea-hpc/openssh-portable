@@ -103,7 +103,7 @@ struct thread_order {
 	int preserve_flag, resume_flag, fsync_flag, err_abort;
 	off_t chunk_start, chunk_end;
 };
-off_t base_chunk_size = 64 * 1024 * 1024;
+extern off_t base_chunk_size;
 
 static u_char *
 get_handle(struct sftp_conn *conn, u_int expected_id, size_t *len,

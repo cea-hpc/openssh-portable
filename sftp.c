@@ -86,6 +86,9 @@ int batchmode = 0;
 /* Number of extra channels (-n option) */
 int extra_channels = 0;
 
+/* Size of un chunk (used when extra_channels > 0) */
+off_t base_chunk_size = 67108864;
+
 /* PID of ssh transport processes */
 static volatile pid_t sshpid[MAX_CHANNELS];
 
@@ -2641,6 +2644,15 @@ main(int argc, char **argv)
 		if (addrlist != NULL)
 			p = random_host(addrlist);
 		queue = thread_queue_create(10 * extra_channels);
+	}
+
+	if (extra_channels && base_chunk_size / (off_t) copy_buffer_len *
+	    (off_t) copy_buffer_len != base_chunk_size) {
+		fprintf(stderr, "Warning: you really should set the buffer "
+		    "size to a power of 2. Not doing so may corrupt your "
+		    "files !\n");
+		base_chunk_size = base_chunk_size / (off_t) copy_buffer_len *
+		    (off_t) copy_buffer_len;
 	}
 
 	for (channel = 0; channel <= extra_channels; channel++) {
