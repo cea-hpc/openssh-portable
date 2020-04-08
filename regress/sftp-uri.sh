@@ -9,6 +9,7 @@ COPY2=${OBJ}/copy2
 DIR=${COPY}.dd
 DIR2=${COPY}.dd2
 SRC=`dirname ${SCRIPT}`
+EXTRA_CHANNELS="0 2"
 
 sftpclean() {
 	rm -rf ${COPY} ${COPY2} ${DIR} ${DIR2}
@@ -21,43 +22,45 @@ start_sshd -oForceCommand="internal-sftp -d /"
 cp $OBJ/ssh_config $OBJ/ssh_config.orig
 egrep -v '^	+(Port|User)	+.*$' $OBJ/ssh_config.orig > $OBJ/ssh_config
 
-verbose "$tid: non-interactive fetch to local file"
-sftpclean
-${SFTP} -q -S "$SSH" -F $OBJ/ssh_config "sftp://${USER}@somehost:${PORT}/${DATA}" ${COPY} || fail "copy failed"
-cmp ${DATA} ${COPY} || fail "corrupted copy"
+for N in $EXTRA_CHANNELS; do
+	verbose "$tid: non-interactive fetch to local file"
+	sftpclean
+	${SFTP} -q -S "$SSH" -F $OBJ/ssh_config "sftp://${USER}@somehost:${PORT}/${DATA}" ${COPY} || fail "copy failed"
+	cmp ${DATA} ${COPY} || fail "corrupted copy"
 
-verbose "$tid: non-interactive fetch to local dir"
-sftpclean
-cp ${DATA} ${COPY}
-${SFTP} -q -S "$SSH" -F $OBJ/ssh_config "sftp://${USER}@somehost:${PORT}/${COPY}" ${DIR} || fail "copy failed"
-cmp ${COPY} ${DIR}/copy || fail "corrupted copy"
+	verbose "$tid: non-interactive fetch to local dir"
+	sftpclean
+	cp ${DATA} ${COPY}
+	${SFTP} -q -S "$SSH" -F $OBJ/ssh_config "sftp://${USER}@somehost:${PORT}/${COPY}" ${DIR} || fail "copy failed"
+	cmp ${COPY} ${DIR}/copy || fail "corrupted copy"
 
-verbose "$tid: put to remote directory (trailing slash)"
-sftpclean
-${SFTP} -q -S "$SSH" -F $OBJ/ssh_config -b - \
-    "sftp://${USER}@somehost:${PORT}/${DIR}/" > /dev/null 2>&1 << EOF
+	verbose "$tid: put to remote directory (trailing slash)"
+	sftpclean
+	${SFTP} -q -S "$SSH" -F $OBJ/ssh_config -b - \
+		"sftp://${USER}@somehost:${PORT}/${DIR}/" > /dev/null 2>&1 << EOF
 	version
 	put ${DATA} copy
 EOF
-r=$?
-if [ $r -ne 0 ]; then
-	fail "sftp failed with $r"
-else
-	cmp ${DATA} ${DIR}/copy || fail "corrupted copy"
-fi
+	r=$?
+	if [ $r -ne 0 ]; then
+		fail "sftp failed with $r"
+	else
+		cmp ${DATA} ${DIR}/copy || fail "corrupted copy"
+	fi
 
-verbose "$tid: put to remote directory (no slash)"
-sftpclean
-${SFTP} -q -S "$SSH" -F $OBJ/ssh_config -b - \
-    "sftp://${USER}@somehost:${PORT}/${DIR}" > /dev/null 2>&1 << EOF
+	verbose "$tid: put to remote directory (no slash)"
+	sftpclean
+	${SFTP} -q -S "$SSH" -F $OBJ/ssh_config -b - \
+		"sftp://${USER}@somehost:${PORT}/${DIR}" > /dev/null 2>&1 << EOF
 	version
 	put ${DATA} copy
 EOF
-r=$?
-if [ $r -ne 0 ]; then
-	fail "sftp failed with $r"
-else
-	cmp ${DATA} ${DIR}/copy || fail "corrupted copy"
-fi
+	r=$?
+	if [ $r -ne 0 ]; then
+		fail "sftp failed with $r"
+	else
+		cmp ${DATA} ${DIR}/copy || fail "corrupted copy"
+	fi
+done
 
 sftpclean
