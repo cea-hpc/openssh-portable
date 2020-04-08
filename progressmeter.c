@@ -36,6 +36,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "progressmeter.h"
 #include "atomicio.h"
@@ -82,6 +83,7 @@ static const char unit[] = " KMGT";
 int progress_started = -1;	/* number of progresses started in parallel */
 static off_t total_done;	/* sum of the size of transferred chunks */
 int progress_channels[MAX_CHANNELS];	/* state of each progress channel */
+pthread_mutex_t progress_mutex;	/* mutex used to protect progress start/stop */
 
 static int
 can_output(void)
@@ -254,6 +256,7 @@ start_progress_meter(const char *f, off_t filesize, off_t *ctr, int channel)
 {
 	int i;
 
+	pthread_mutex_lock(&progress_mutex);
 	if (progress_started != -1) {
 		if (channel > progress_started)
 			progress_started = channel;
@@ -285,11 +288,13 @@ start_progress_meter(const char *f, off_t filesize, off_t *ctr, int channel)
 		ssh_signal(SIGWINCH, sig_winch);
 		alarm(UPDATE_INTERVAL);
 	}
+	pthread_mutex_unlock(&progress_mutex);
 }
 
 void
 stop_progress_meter(int channel, int extra_channels)
 {
+	pthread_mutex_lock(&progress_mutex);
 	total_done += *counter[channel];
 	progress_channels[channel] = 0;
 
@@ -307,6 +312,7 @@ stop_progress_meter(int channel, int extra_channels)
 		progress_started = -1;
 		free((void *) file);
 	}
+	pthread_mutex_unlock(&progress_mutex);
 }
 
 void
