@@ -1167,7 +1167,7 @@ next:			if (fd != -1) {
 			run_err("%s: %s", name, strerror(haderr));
 		(void) response();
 		if (showprogress)
-			stop_progress_meter(0);
+			stop_progress_meter(0, 0);
 	}
 }
 
@@ -1526,7 +1526,7 @@ bad:			run_err("%s: %s", np, strerror(errno));
 		}
 		(void) response();
 		if (showprogress)
-			stop_progress_meter(0);
+			stop_progress_meter(0, 0);
 		if (setimes && wrerr == NO) {
 			setimes = 0;
 			if (utimes(np, tv) == -1) {

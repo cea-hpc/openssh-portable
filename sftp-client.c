@@ -1637,7 +1637,7 @@ failchunk:
 	}
 
 	if (showprogress && size)
-		stop_progress_meter(channel);
+		stop_progress_meter(channel, extra_channels);
 
 	/* Sanity check */
 	if (TAILQ_FIRST(&requests) != NULL)
@@ -2142,7 +2142,7 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 	sshbuf_free(msg);
 
 	if (showprogress)
-		stop_progress_meter(channel);
+		stop_progress_meter(channel, extra_channels);
 	free(data);
 
 	if (status != SSH2_FX_OK) {

@@ -82,7 +82,6 @@ static const char unit[] = " KMGT";
 int progress_started = -1;	/* number of progresses started in parallel */
 static off_t total_done;	/* sum of the size of transferred chunks */
 int progress_channels[MAX_CHANNELS];	/* state of each progress channel */
-extern int extra_channels;	/* numbmer of extra channels (-n option) */
 
 static int
 can_output(void)
@@ -289,7 +288,7 @@ start_progress_meter(const char *f, off_t filesize, off_t *ctr, int channel)
 }
 
 void
-stop_progress_meter(int channel)
+stop_progress_meter(int channel, int extra_channels)
 {
 	total_done += *counter[channel];
 	progress_channels[channel] = 0;
