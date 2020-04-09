@@ -750,7 +750,8 @@ process_get(struct sftp_conn *conn, const char *src, const char *dst,
 			    g.gl_pathv[i], abs_dst);
 		if (pathname_is_dir(g.gl_pathv[i]) && (rflag || global_rflag)) {
 			if (download_dir(conn, g.gl_pathv[i], abs_dst, NULL,
-			    pflag || global_pflag, (showprogress && extra_channels) ? 0 : 1, resume,
+			    pflag || global_pflag,
+			    (showprogress && extra_channels) ? 0 : 1, resume,
 			    fflag || global_fflag, err_abort) == -1)
 				err = -1;
 		} else {
@@ -843,7 +844,8 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 			    g.gl_pathv[i], abs_dst);
 		if (pathname_is_dir(g.gl_pathv[i]) && (rflag || global_rflag)) {
 			if (upload_dir(conn, g.gl_pathv[i], abs_dst,
-			    pflag || global_pflag, (showprogress && extra_channels) ? 0 : 1, resume,
+			    pflag || global_pflag,
+			    (showprogress && extra_channels) ? 0 : 1, resume,
 			    fflag || global_fflag, err_abort) == -1)
 				err = -1;
 		} else {

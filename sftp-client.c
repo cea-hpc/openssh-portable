@@ -1530,6 +1530,10 @@ failchunk:
 
 		/* Send some more requests */
 		while (num_req < max_req) {
+			if (chunk_end && (off_t)offset - 1 == chunk_end)
+				break;
+			else if (chunk_end && (off_t)offset - 1 > chunk_end)
+				fatal("%s: offset - 1 > chunk_end", __func__);
 			debug3("Request range %llu -> %llu (%d/%d)",
 			    (unsigned long long)offset,
 			    (unsigned long long)offset + buflen - 1,
