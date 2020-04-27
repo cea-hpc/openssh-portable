@@ -657,7 +657,7 @@ regress-unit-binaries: regress-prep $(REGRESSLIBS) \
 	regress/unittests/utf8/test_utf8$(EXEEXT) \
 	regress/misc/kexfuzz/kexfuzz$(EXEEXT)
 
-tests:	file-tests t-exec interop-tests unit
+tests:	t-docker file-tests t-exec interop-tests unit
 	echo all tests passed
 
 unit: regress-unit-binaries
@@ -666,6 +666,13 @@ unit: regress-unit-binaries
 	$(MAKE) \
 		.OBJDIR="$${BUILDDIR}/regress" \
 		.CURDIR="`pwd`" \
+		$@ && echo $@ tests passed
+
+t-docker:
+	BUILDDIR=`pwd`; \
+	cd $(srcdir)/regress || exit $$?; \
+	$(MAKE) \
+		.OBJDIR="$${BUILDDIR}/regress" \
 		$@ && echo $@ tests passed
 
 interop-tests t-exec file-tests: regress-prep regress-binaries $(TARGETS)

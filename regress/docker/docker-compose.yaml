@@ -1,0 +1,48 @@
+version: '3'
+
+services:
+    tester:
+        container_name: tester
+        hostname: tester
+        build: centos-image
+        depends_on:
+            - server1
+            - server2
+        volumes:
+            - ../../../openssh-portable:/openssh-portable
+        networks:
+            - test
+        command: ["/root/openssh.sh"]
+
+    server1:
+        container_name: server1
+        hostname: server1
+        build: centos-image
+        expose:
+            - 22
+        volumes:
+            - ./share:/share
+        networks:
+            test:
+                aliases:
+                    - both
+        command: ["/usr/sbin/sshd", "-De"]
+
+    server2:
+        container_name: server2
+        hostname: server2
+        build: centos-image
+        expose:
+            - 22
+        volumes:
+            - ./share:/share
+        networks:
+            test:
+                aliases:
+                    - both
+        command: ["/usr/sbin/sshd", "-De"]
+
+networks:
+    test:
+
+# vim: set et sw=4 ts=4 sts=4:

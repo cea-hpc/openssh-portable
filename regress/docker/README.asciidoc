@@ -1,0 +1,95 @@
+Functional Tests
+================
+
+How is it working?
+------------------
+
+The functional tests are run with +docker-compose+. The +run.sh+ script is a
+wrapper to automatically start the tests (e.g. when using +make test+ or +make
+t-docker+).
+
+Every container is created with the same +Dockerfile+ found in the
++centos-image+ directory. All scripts started in the containers are located in
+the +centos-image+ directory.
+
+The following containers will be created:
+
+tester::
+	where all tests are started. It executes two +bash+ programs. One for
+compiling sftp, the other for testing sftp (cf. below).
+
+server{1,2}::
+	servers with local and shared directories. They all execute an SSH
+server.
+
+The tests that run on tester can be found in the +centos-image/test.sh+ file.
+
+How to debug the tests?
+-----------------------
+
+To debug the tests, we can modify the definition of the tester container in
++docker-compose.yaml+:
+
+------------------------------------------------------------------------------
+diff --git a/regress/docker/docker-compose.yaml b/regress/docker/docker-compose.yaml
+index 65ae927..0621932 100644
+--- a/regress/docker/docker-compose.yaml
++++ b/regress/docker/docker-compose.yaml
+@@ -5,15 +5,15 @@ services:
+            - ../../../openssh-portable:/openssh-portable
+        networks:
+            - test
+-        command: ["/root/openssh.sh"]
++        command: ["/usr/sbin/sshd", "-De"]
+
+    server1:
+        container_name: server1
+------------------------------------------------------------------------------
+
+Then we start (and build if necessary) all containers:
+
+	$ docker-compose up --build
+
+Once every container is started, we can connect to the tester container:
+
+	$ docker-compose exec tester /bin/bash
+	[root@tester /]#
+
+We then use the +bash openssh.sh+ command to build sftp, and +bash test.sh+ to
+run the tests:
+
+------------------------------------------------------------------------------
+[centos@tester ~]$ bash test.sh
+===== Creating test tree =====
+===== NFS host=server1 extra_channels=0 =====
+sftp> put -r dir /share
+Entering dir/
+Entering dir/b
+Entering dir/a
+Entering dir/a/2
+Entering dir/a/1
+sftp> get -r /share/dir dir2
+Retrieving /share/dir
+Retrieving /share/dir/b
+Retrieving /share/dir/a
+Retrieving /share/dir/a/2
+Retrieving /share/dir/a/1
+Elapsed time: 20.27
+===== NFS host=server1 extra_channels=2 =====
+sftp> put -r dir /share
+Entering dir/
+Entering dir/b
+Entering dir/a
+Entering dir/a/2
+Entering dir/a/1
+sftp> get -r /share/dir dir2
+Retrieving /share/dir
+Retrieving /share/dir/b
+Retrieving /share/dir/a
+Retrieving /share/dir/a/2
+Retrieving /share/dir/a/1
+Elapsed time: 13.78
+[...]
+------------------------------------------------------------------------------
+
+// vim:tw=78:ft=asciidoc:
