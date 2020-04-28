@@ -1,6 +1,6 @@
 #	$OpenBSD: Makefile,v 1.106 2020/01/31 23:25:08 djm Exp $
 
-tests:		t-docker prep file-tests t-exec unit
+tests:		prep file-tests t-exec unit
 
 REGRESS_TARGETS=	t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11 t12
 

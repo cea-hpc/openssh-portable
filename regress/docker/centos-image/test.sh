@@ -3,10 +3,12 @@
 set -eu
 
 extra_channels="0 2"
+buffer_size="32768 131072"
+num_requests="64 512"
 host1="server1"
 host2="server2"
 hosts="$host1 both"
-sftp="/usr/bin/time -f Elapsed time: %e /tmp/openssh-portable/sftp -R 512 -B 131072"
+sftp="/usr/bin/time -f Elapsed time: %e /tmp/openssh-portable/sftp"
 
 do_cleanup() {
 	rm -rf dir2
@@ -43,32 +45,31 @@ do_compare() {
 	echo -ne "\e[39m"
 }
 
+do_tests() {
+	mode=$1
+	for h in $hosts; do
+		for r in $num_requests; do
+			for b in $buffer_size; do
+				for n in $extra_channels; do
+					if [ $mode = "NFS" ] || [ $h = $host1 ] || [ $n = "0" ]; then
+						echo -e "\e[1m===== $mode host=$h num_requests=$r buffer_size=$b extra_channels=$n =====\e[0m"
+						$sftp -R $r -B $b -n $n -b batch $h
+						do_compare
+						do_cleanup
+					fi
+				done
+			done
+		done
+	done
+}
+
 do_cleanup
 do_create
 
 echo "put -r dir /share" > batch
 echo "get -r /share/dir dir2" >> batch
-for h in $hosts; do
-	for n in $extra_channels; do
-		echo -e "\e[1m===== NFS host=$h extra_channels=$n =====\e[0m"
-		$sftp -n $n -b batch $h
-		do_compare
-		do_cleanup
-	done
-done
+do_tests NFS
 
 echo "put -r dir" > batch
 echo "get -r dir dir2" >> batch
-for h in $hosts; do
-	echo -e "\e[1m===== noNFS host=$h extra_channels=0 =====\e[0m"
-	$sftp -n 0 -b batch $h
-	do_compare
-	do_cleanup
-done
-
-echo -e "\e[1m===== noNFS host=$host1 extra_channels=2 =====\e[0m"
-$sftp -n 2 -b batch $host1
-do_compare
-do_cleanup
-
-rm batch
+do_tests noNFS
