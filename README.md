@@ -21,10 +21,9 @@ The official documentation for OpenSSH are the man pages for each tool:
 
 This version of sftp has an additional option:
 
-```
--n extra_channels
- Sets the number of extra ssh channels used by get and put. Defaults to 0. Maximum value is 63. If set to a value > 0, get and put will be made by these extra channels in parallel. If destination resolves to multiple addresses, ssh connections are dispatched between these addresses.
-```
+Flag | Meaning
+--- | ---
+``-n extra_channels`` | Sets the number of extra ssh channels used by get and put. Defaults to 0. Maximum value is 63. If set to a value > 0, get and put will be made by these extra channels in parallel. If destination resolves to multiple addresses, ssh connections are dispatched between these addresses.
 
 ## Stable Releases
 
