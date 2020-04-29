@@ -2943,7 +2943,7 @@ thread_queue_enqueue(struct thread_order order)
 	queue->rear = (queue->rear + 1)%queue->capacity;
 	queue->orders[queue->rear] = order;
 	queue->size = queue->size + 1;
-	debug("%s enqueued (size %d)", order.func, queue->size);
+	debug("%s enqueued (queue size %d)", order.func, queue->size);
 }
 
 struct thread_order
