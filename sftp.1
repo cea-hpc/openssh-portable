@@ -39,6 +39,7 @@
 .Op Fl i Ar identity_file
 .Op Fl J Ar destination
 .Op Fl l Ar limit
+.Op Fl n Ar extra_channels
 .Op Fl o Ar ssh_option
 .Op Fl P Ar port
 .Op Fl R Ar num_requests
@@ -197,6 +198,17 @@ This option is directly passed to
 .Xr ssh 1 .
 .It Fl l Ar limit
 Limits the used bandwidth, specified in Kbit/s.
+.It Fl n Ar extra_channels
+Sets the number of extra
+.Nm ssh
+channels used by get and put. Defaults to 0.
+Maximum value is 63. If set to a value > 0, get and put will be made by these
+extra channels in parallel.
+If
+.Ar destination
+resolves to multiple addresses,
+.Nm ssh
+connections are dispatched between these addresses.
 .It Fl o Ar ssh_option
 Can be used to pass options to
 .Nm ssh

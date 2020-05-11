@@ -36,6 +36,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "progressmeter.h"
 #include "atomicio.h"
@@ -47,6 +48,7 @@
 #define PADDING 1		/* padding between the progress indicators */
 #define UPDATE_INTERVAL 1	/* update the progress meter every second */
 #define STALL_TIME 5		/* we're stalled after this many seconds */
+#define MAX_CHANNELS 64		/* maximum number of parallel channels */
 
 /* determines whether we can output to the terminal */
 static int can_output(void);
@@ -68,7 +70,7 @@ static const char *file;	/* name of the file being transferred */
 static off_t start_pos;		/* initial position of transfer */
 static off_t end_pos;		/* ending position of transfer */
 static off_t cur_pos;		/* transfer position as of last refresh */
-static volatile off_t *counter;	/* progress counter */
+static volatile off_t *counter[MAX_CHANNELS];	/* progress counter */
 static long stalled;		/* how long we have been stalled */
 static int bytes_per_second;	/* current speed in bytes per second */
 static int win_size;		/* terminal window size */
@@ -77,6 +79,11 @@ static volatile sig_atomic_t alarm_fired;
 
 /* units for format_size */
 static const char unit[] = " KMGT";
+
+int progress_started = -1;	/* number of progresses started in parallel */
+static off_t total_done;	/* sum of the size of transferred chunks */
+int progress_channels[MAX_CHANNELS];	/* state of each progress channel */
+pthread_mutex_t progress_mutex;	/* mutex used to protect progress start/stop */
 
 static int
 can_output(void)
@@ -127,6 +134,7 @@ refresh_progress_meter(int force_update)
 	int cur_speed;
 	int hours, minutes, seconds;
 	int file_len;
+	int i;
 
 	if ((!force_update && !alarm_fired && !win_resized) || !can_output())
 		return;
@@ -137,8 +145,14 @@ refresh_progress_meter(int force_update)
 		win_resized = 0;
 	}
 
-	transferred = *counter - (cur_pos ? cur_pos : start_pos);
-	cur_pos = *counter;
+	transferred = total_done - (cur_pos ? cur_pos : start_pos);
+	cur_pos = total_done;
+	for (i = 0; i <= progress_started; i++) {
+		if (progress_channels[i]) {
+			transferred += *counter[i];
+			cur_pos += *counter[i];
+		}
+	}
 	now = monotime_double();
 	bytes_left = end_pos - cur_pos;
 
@@ -239,28 +253,52 @@ sig_alarm(int ignore)
 }
 
 void
-start_progress_meter(const char *f, off_t filesize, off_t *ctr)
+start_progress_meter(const char *f, off_t filesize, off_t *ctr, int channel)
 {
-	start = last_update = monotime_double();
-	file = f;
-	start_pos = *ctr;
-	end_pos = filesize;
-	cur_pos = 0;
-	counter = ctr;
-	stalled = 0;
-	bytes_per_second = 0;
+	int i;
 
-	setscreensize();
-	refresh_progress_meter(1);
+	pthread_mutex_lock(&progress_mutex);
+	if (progress_started != -1) {
+		if (channel > progress_started)
+			progress_started = channel;
+		free((void *) file);
+		file = strdup(f);
+		end_pos += filesize;
+		counter[channel] = ctr;
+		progress_channels[channel] = 1;
+	} else {
+		for (i = 0; i < MAX_CHANNELS; i++) {
+			progress_channels[i] = 0;
+		}
+		progress_started = channel;
+		total_done = 0;
+		file = strdup(f);
+		start = last_update = monotime_double();
+		start_pos = *ctr;
+		end_pos = filesize;
+		cur_pos = 0;
+		counter[channel] = ctr;
+		progress_channels[channel] = 1;
+		stalled = 0;
+		bytes_per_second = 0;
 
-	signal(SIGALRM, sig_alarm);
-	signal(SIGWINCH, sig_winch);
-	alarm(UPDATE_INTERVAL);
+		setscreensize();
+		refresh_progress_meter(1);
+
+		signal(SIGALRM, sig_alarm);
+		signal(SIGWINCH, sig_winch);
+		alarm(UPDATE_INTERVAL);
+	}
+	pthread_mutex_unlock(&progress_mutex);
 }
 
 void
-stop_progress_meter(void)
+stop_progress_meter(int channel, int extra_channels)
 {
+	pthread_mutex_lock(&progress_mutex);
+	total_done += *counter[channel];
+	progress_channels[channel] = 0;
+
 	alarm(0);
 
 	if (!can_output())
@@ -270,7 +308,27 @@ stop_progress_meter(void)
 	if (cur_pos != end_pos)
 		refresh_progress_meter(1);
 
-	atomicio(vwrite, STDOUT_FILENO, "\n", 1);
+	if (channel == 0 && extra_channels == 0) {
+		atomicio(vwrite, STDOUT_FILENO, "\n", 1);
+		progress_started = -1;
+		free((void *) file);
+	}
+	pthread_mutex_unlock(&progress_mutex);
+}
+
+void
+real_stop_progress_meter(void)
+{
+	if (progress_started != -1) {
+		alarm(0);
+
+		if (!can_output())
+			return;
+
+		atomicio(vwrite, STDOUT_FILENO, "\n", 1);
+		progress_started = -1;
+		free((void *) file);
+	}
 }
 
 /*ARGSUSED*/

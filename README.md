@@ -17,6 +17,12 @@ The official documentation for OpenSSH are the man pages for each tool:
 * [ssh-keyscan(8)](https://man.openbsd.org/ssh-keyscan.8)
 * [sftp-server(8)](https://man.openbsd.org/sftp-server.8)
 
+This version of sftp has an additional option:
+
+Flag | Meaning
+--- | ---
+``-n extra_channels`` | Sets the number of extra ssh channels used by get and put. Defaults to 0. Maximum value is 63. If set to a value > 0, get and put will be made by these extra channels in parallel. If destination resolves to multiple addresses, ssh connections are dispatched between these addresses.
+
 ## Stable Releases
 
 Stable release tarballs are available from a number of [download mirrors](https://www.openssh.com/portable.html#downloads). We recommend the use of a stable release for most users. Please read the [release notes](https://www.openssh.com/releasenotes.html) for details of recent changes and potential incompatibilities.
