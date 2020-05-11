@@ -1828,11 +1828,10 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 	free(path2);
 
 	/* If an unignored error occurs in batch mode we should abort. */
-	if (err_abort && err != 0) {
+	if (err_abort && err != 0)
 		return (-1);
-	} else if (cmdnum == I_QUIT) {
+	else if (cmdnum == I_QUIT)
 		return (1);
-	}
 
 	return (0);
 }
