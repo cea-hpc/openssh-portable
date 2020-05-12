@@ -96,6 +96,21 @@
 #define SSH2_FX_MAX			8
 
 struct passwd;
+struct thread_order;
+struct thread_args;
 
 int	sftp_server_main(int, char **, struct passwd *);
 void	sftp_server_cleanup_exit(int) __attribute__((noreturn));
+struct addrinfo *	resolve_host(const char *);
+void *			thread_loop(void *);
+int			thread_real_loop(struct thread_args *targs);
+struct thread_queue *	thread_queue_create(unsigned);
+int			is_thread_queue_full();
+int			is_thread_queue_empty();
+void			thread_queue_enqueue(struct thread_order);
+struct thread_order	thread_queue_dequeue();
+void			thread_queue_safe_enqueue(struct thread_order);
+void			thread_queue_safe_done(int);
+unsigned		is_thread_queue_safe_running();
+int			thread_queue_safe_status();
+struct addrinfo *	random_host(struct addrinfo *);
