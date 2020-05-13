@@ -1141,6 +1141,7 @@ Available keywords are
 .Cm PermitEmptyPasswords ,
 .Cm PermitListen ,
 .Cm PermitOpen ,
+.Cm PermitOpenCommand ,
 .Cm PermitRootLogin ,
 .Cm PermitTTY ,
 .Cm PermitTunnel ,
@@ -1275,6 +1276,15 @@ The wildcard
 .Sq *
 can be used for host or port to allow all hosts or ports, respectively.
 By default all port forwarding requests are permitted.
+.It Cm PermitOpenCommand
+Specifies a program to be used to look up if the TCP port forwarding is
+permitted for the provided destination. It will be invoked with two arguments:
+respectively the host (or IP address) and the port to connect to. If the TCP
+forwarding is allowed the program must return with an exit code of 0 and
+produce on standard output the space-separated destination host and port (which
+can be different from the inkoved ones). The destination host can also be a
+Unix socket in which case the port must be 0. The TCP port forwarding will be
+denied if the return code is not 0 or the output is invalid.
 .It Cm PermitRootLogin
 Specifies whether root can log in using
 .Xr ssh 1 .

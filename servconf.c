@@ -180,6 +180,7 @@ initialize_server_options(ServerOptions *options)
 	options->fingerprint_hash = -1;
 	options->disable_forwarding = -1;
 	options->expose_userauth_info = -1;
+	options->permit_open_command = NULL;
 }
 
 /* Returns 1 if a string option is unset or set to "none" or 0 otherwise. */
@@ -510,6 +511,7 @@ typedef enum {
 	sStreamLocalBindMask, sStreamLocalBindUnlink,
 	sAllowStreamLocalForwarding, sFingerprintHash, sDisableForwarding,
 	sExposeAuthInfo, sRDomain,
+	sPermitOpenCommand,
 	sDeprecated, sIgnore, sUnsupported
 } ServerOpCodes;
 
@@ -658,6 +660,7 @@ static struct {
 	{ "exposeauthinfo", sExposeAuthInfo, SSHCFG_ALL },
 	{ "rdomain", sRDomain, SSHCFG_ALL },
 	{ "casignaturealgorithms", sCASignatureAlgorithms, SSHCFG_ALL },
+	{ "permitopencommand", sPermitOpenCommand, SSHCFG_ALL },
 	{ NULL, sBadOption, 0 }
 };
 
@@ -2167,6 +2170,20 @@ process_server_config_line(ServerOptions *options, char *line,
 			*charptr = xstrdup(arg);
 		break;
 
+	case sPermitOpenCommand:
+		len = strspn(cp, WHITESPACE);
+		if (*activep && options->permit_open_command == NULL) {
+			if (cp[len] != '/' && strcasecmp(cp + len, "none") != 0)
+				fatal("%.200s line %d: PermitOpenCommand "
+				    "must be an absolute path",
+				    filename, linenum);
+			if (strcasecmp(cp + len, "none") != 0)
+				options->permit_open_command = xstrdup(cp + len);
+				channel_set_permit_open_command(options->permit_open_command);
+		}
+		return 0;
+		break;
+
 	case sDeprecated:
 	case sIgnore:
 	case sUnsupported:
@@ -2637,6 +2654,7 @@ dump_config(ServerOptions *o)
 	dump_cfg_string(sPubkeyAcceptedKeyTypes, o->pubkey_key_types ?
 	    o->pubkey_key_types : KEX_DEFAULT_PK_ALG);
 	dump_cfg_string(sRDomain, o->routing_domain);
+	dump_cfg_string(sPermitOpenCommand, o->permit_open_command);
 
 	/* string arguments requiring a lookup */
 	dump_cfg_string(sLogLevel, log_level_name(o->log_level));

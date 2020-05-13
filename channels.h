@@ -317,6 +317,7 @@ int	 channel_cancel_rport_listener(struct ssh *, struct Forward *);
 int	 channel_cancel_lport_listener(struct ssh *, struct Forward *,
 	    int, struct ForwardOptions *);
 int	 permitopen_port(const char *);
+void     channel_set_permit_open_command(char *);
 
 /* x11 forwarding */
 

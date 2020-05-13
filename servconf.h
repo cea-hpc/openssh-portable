@@ -191,6 +191,8 @@ typedef struct {
 	char   **permitted_listens; /* May also be one of PERMITOPEN_* */
 	u_int   num_permitted_listens;
 
+	char   *permit_open_command;
+
 	char   *chroot_directory;
 	char   *revoked_keys_file;
 	char   *trusted_user_ca_keys;
@@ -247,6 +249,7 @@ struct connection_info {
 		M_CP_STROPT(ca_sign_algorithms); \
 		M_CP_STROPT(routing_domain); \
 		M_CP_STROPT(permit_user_env_whitelist); \
+		M_CP_STROPT(permit_open_command); \
 		M_CP_STRARRAYOPT(authorized_keys_files, num_authkeys_files); \
 		M_CP_STRARRAYOPT(allow_users, num_allow_users); \
 		M_CP_STRARRAYOPT(deny_users, num_deny_users); \

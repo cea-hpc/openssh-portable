@@ -46,6 +46,7 @@
 #include <sys/ioctl.h>
 #include <sys/un.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #ifdef HAVE_SYS_TIME_H
 # include <sys/time.h>
 #endif
@@ -93,6 +94,9 @@
 
 /* special-case wildcard meaning allow any host */
 #define FWD_PERMIT_ANY_HOST	"*"
+
+/* Command to check TCP forwarding host and port */
+static char *permit_open_command = NULL;
 
 /* -- X11 forwarding */
 /* Maximum number of fake X11 displays to try. */
@@ -4362,6 +4366,149 @@ channel_connect_by_listen_path(struct ssh *ssh, const char *path,
 	return NULL;
 }
 
+void
+channel_set_permit_open_command(char *cmd)
+{
+	permit_open_command = cmd;
+}
+
+int
+run_permit_open_command(const char *host, int port, char *dhost,
+    size_t dhost_size, int *dport)
+{
+	FILE *f;
+	char *s;
+	char portstr[NI_MAXSERV];
+	struct stat st;
+	int status, devnull, p[2], i;
+	int found_destination = 0;
+	pid_t pid;
+
+	if (port == PORT_STREAMLOCAL)
+		logit("PermitOpenCommand %s %s", permit_open_command, host);
+	else
+		logit("PermitOpenCommand %s %s %d", permit_open_command, host,
+		    port);
+
+	if (stat(permit_open_command, &st) < 0) {
+		error("Could not stat PermitOpenCommand \"%s\": %s",
+		    permit_open_command, strerror(errno));
+		return 0;
+	}
+
+	if (pipe(p) != 0) {
+		error("%s: pipe: %s", __func__, strerror(errno));
+		return 0;
+	}
+
+	switch ((pid = fork())) {
+	case -1: /* error */
+		error("%s: fork: %s", __func__, strerror(errno));
+		close(p[0]);
+		close(p[1]);
+		return 0;
+	case 0: /* child */
+		for (i = 0; i < NSIG; i++)
+			signal(i, SIG_DFL);
+
+		if ((devnull = open(_PATH_DEVNULL, O_RDWR)) == -1) {
+			error("%s: open %s: %s", __func__, _PATH_DEVNULL,
+			    strerror(errno));
+			_exit(1);
+		}
+		/* Keep stderr around a while longer to catch errors */
+		if (dup2(devnull, STDIN_FILENO) == -1 ||
+		    dup2(p[1], STDOUT_FILENO) == -1) {
+			error("%s: dup2: %s", __func__, strerror(errno));
+			_exit(1);
+		}
+		closefrom(STDERR_FILENO + 1);
+
+		/* stdin is pointed to /dev/null at this point */
+		if (dup2(STDIN_FILENO, STDERR_FILENO) == -1) {
+			error("%s: dup2: %s", __func__, strerror(errno));
+			_exit(1);
+		}
+
+		snprintf(portstr, sizeof(portstr), "%d", port);
+		execl(permit_open_command, permit_open_command, host, portstr,
+		    NULL);
+
+		error("PermitOpenCommand %s exec failed: %s",
+		    permit_open_command, strerror(errno));
+		_exit(127);
+	default: /* parent */
+		break;
+	}
+
+	close(p[1]);
+	if ((f = fdopen(p[0], "r")) == NULL) {
+		error("%s: fdopen: %s", __func__, strerror(errno));
+		close(p[0]);
+		/* Don't leave zombie child */
+		kill(pid, SIGTERM);
+		while (waitpid(pid, NULL, 0) == -1 && errno == EINTR)
+			;
+		return 0;
+	}
+
+	if (fgets(dhost, dhost_size, f) != NULL) {
+		debug3("PermitOpenCommand %s returned: %s",
+		    permit_open_command, dhost);
+		chop(dhost);
+		s = strpbrk(dhost, " \t\r\n");
+		if (s == NULL) {
+			error("PermitOpenCommand %s returned invalid string: "
+			    "%s", permit_open_command, dhost);
+		} else {
+			*s = '\0';
+			s++;
+			if (strlen(dhost) == 0) {
+				error("PermitOpenCommand %s returned invalid "
+				    "host/path", permit_open_command);
+			} else if ((*dport = a2port(s)) < 0) {
+				error("PermitOpenCommand %s returned invalid "
+				    "port: %s", permit_open_command, s);
+			} else {
+				if (*dport == 0) {
+					*dport = PORT_STREAMLOCAL;
+				}
+				found_destination = 1;
+			}
+		}
+	}
+
+	fclose(f);
+
+	while (waitpid(pid, &status, 0) == -1) {
+		if (errno != EINTR) {
+			error("%s: waitpid: %s", __func__, strerror(errno));
+			return 0;
+		}
+	}
+	if (WIFSIGNALED(status)) {
+		error("PermitOpenCommand %s exited on signal %d",
+		    permit_open_command, WTERMSIG(status));
+		return 0;
+	} else if (WEXITSTATUS(status) != 0) {
+		error("PermitOpenCommand %s returned status %d",
+		    permit_open_command, WEXITSTATUS(status));
+		return 0;
+	}
+
+	if (found_destination) {
+		if (port == PORT_STREAMLOCAL) {
+			logit("PermitOpenCommand %s %s -> %s %d", permit_open_command,
+			host, dhost, *dport);
+		} else {
+			logit("PermitOpenCommand %s %s %d -> %s %d", permit_open_command,
+			host, port, dhost, *dport);
+		}
+	}
+
+	return found_destination;
+}
+
 /* Check if connecting to that port is permitted and connect. */
 Channel *
 channel_connect_to_port(struct ssh *ssh, const char *host, u_short port,
@@ -4374,6 +4521,11 @@ channel_connect_to_port(struct ssh *ssh, const char *host, u_short port,
 	u_int i, permit, permit_adm = 1;
 	int sock;
 	struct permission *perm;
+	char dhost[512];
+	int dport;
+
+	strlcpy(dhost, host, sizeof(dhost));
+	dport = port;
 
 	permit = pset->all_permitted;
 	if (!permit) {
@@ -4386,7 +4538,10 @@ channel_connect_to_port(struct ssh *ssh, const char *host, u_short port,
 		}
 	}
 
-	if (pset->num_permitted_admin > 0) {
+	if (permit_open_command != NULL) {
+		permit_adm = run_permit_open_command(host, port, dhost,
+		    sizeof(dhost), &dport);
+	} else if (pset->num_permitted_admin > 0) {
 		permit_adm = 0;
 		for (i = 0; i < pset->num_permitted_admin; i++) {
 			perm = &pset->permitted_admin[i];
@@ -4406,7 +4561,7 @@ channel_connect_to_port(struct ssh *ssh, const char *host, u_short port,
 	}
 
 	memset(&cctx, 0, sizeof(cctx));
-	sock = connect_to_helper(ssh, host, port, SOCK_STREAM, ctype, rname,
+	sock = connect_to_helper(ssh, dhost, dport, SOCK_STREAM, ctype, rname,
 	    &cctx, reason, errmsg);
 	if (sock == -1) {
 		channel_connect_ctx_free(&cctx);
@@ -4415,8 +4570,8 @@ channel_connect_to_port(struct ssh *ssh, const char *host, u_short port,
 
 	c = channel_new(ssh, ctype, SSH_CHANNEL_CONNECTING, sock, sock, -1,
 	    CHAN_TCP_WINDOW_DEFAULT, CHAN_TCP_PACKET_DEFAULT, 0, rname, 1);
-	c->host_port = port;
-	c->path = xstrdup(host);
+	c->host_port = dport;
+	c->path = xstrdup(dhost);
 	c->connect_ctx = cctx;
 
 	return c;
@@ -4431,6 +4586,11 @@ channel_connect_to_path(struct ssh *ssh, const char *path,
 	struct permission_set *pset = &sc->local_perms;
 	u_int i, permit, permit_adm = 1;
 	struct permission *perm;
+	char dhost[512];
+	int dport;
+
+	strlcpy(dhost, path, sizeof(dhost));
+	dport = PORT_STREAMLOCAL;
 
 	permit = pset->all_permitted;
 	if (!permit) {
@@ -4443,7 +4603,10 @@ channel_connect_to_path(struct ssh *ssh, const char *path,
 		}
 	}
 
-	if (pset->num_permitted_admin > 0) {
+	if (permit_open_command != NULL) {
+		permit_adm = run_permit_open_command(path, PORT_STREAMLOCAL,
+		    dhost, sizeof(dhost), &dport);
+	} else if (pset->num_permitted_admin > 0) {
 		permit_adm = 0;
 		for (i = 0; i < pset->num_permitted_admin; i++) {
 			perm = &pset->permitted_admin[i];
@@ -4459,7 +4622,7 @@ channel_connect_to_path(struct ssh *ssh, const char *path,
 		    "but the request was denied.", path);
 		return NULL;
 	}
-	return connect_to(ssh, path, PORT_STREAMLOCAL, ctype, rname);
+	return connect_to(ssh, dhost, dport, ctype, rname);
 }
 
 void
