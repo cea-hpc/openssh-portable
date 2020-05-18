@@ -29,6 +29,8 @@ struct Forward {
 	char	 *connect_path;		/* Path to connect domain socket. */
 	int	  allocated_port;	/* Dynamically allocated listen port */
 	int	  handle;		/* Handle for dynamic listen ports */
+	char	 *orig_listen_host;
+	int	  orig_listen_port;
 };
 
 int forward_equals(const struct Forward *, const struct Forward *);

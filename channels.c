@@ -395,6 +395,8 @@ channel_new(struct ssh *ssh, char *ctype, int type, int rfd, int wfd, int efd,
 	c->remote_name = xstrdup(remote_name);
 	c->ctl_chan = -1;
 	c->delayed = 1;		/* prevent call to channel_post handler */
+	c->orig_listen_port = -1;
+	c->orig_listen_host = NULL;
 	TAILQ_INIT(&c->status_confirms);
 	debug("channel %d: new [%s]", found, remote_name);
 	return c;
@@ -621,6 +623,8 @@ channel_free(struct ssh *ssh, Channel *c)
 	c->path = NULL;
 	free(c->listening_addr);
 	c->listening_addr = NULL;
+	free(c->orig_listen_host);
+	c->orig_listen_host = NULL;
 	while ((cc = TAILQ_FIRST(&c->status_confirms)) != NULL) {
 		if (cc->abandon_cb != NULL)
 			cc->abandon_cb(ssh, c, cc->ctx);
@@ -1718,16 +1722,31 @@ port_open_helper(struct ssh *ssh, Channel *c, char *rtype)
 		}
 	} else if (strcmp(rtype, "forwarded-streamlocal@openssh.com") == 0) {
 		/* listen path */
-		if ((r = sshpkt_put_cstring(ssh, c->path)) != 0) {
-			fatal("%s: channel %i: reply %s", __func__,
-			    c->self, ssh_err(r));
+		if (c->orig_listen_host == NULL) {
+			if ((r = sshpkt_put_cstring(ssh, c->path)) != 0) {
+				fatal("%s: channel %i: reply %s", __func__,
+				    c->self, ssh_err(r));
+			}
+		} else {
+			if ((r = sshpkt_put_cstring(ssh, c->orig_listen_host)) != 0) {
+				fatal("%s: channel %i: reply %s", __func__,
+				    c->self, ssh_err(r));
+			}
 		}
 	} else {
 		/* listen address, port */
-		if ((r = sshpkt_put_cstring(ssh, c->path)) != 0 ||
-		    (r = sshpkt_put_u32(ssh, local_port)) != 0) {
-			fatal("%s: channel %i: reply %s", __func__,
-			    c->self, ssh_err(r));
+		if (c->orig_listen_host == NULL) {
+			if ((r = sshpkt_put_cstring(ssh, c->path)) != 0 ||
+			    (r = sshpkt_put_u32(ssh, local_port)) != 0) {
+				fatal("%s: channel %i: reply %s", __func__,
+				    c->self, ssh_err(r));
+			}
+		} else {
+			if ((r = sshpkt_put_cstring(ssh, c->orig_listen_host)) != 0 ||
+			    (r = sshpkt_put_u32(ssh, c->orig_listen_port)) != 0) {
+				fatal("%s: channel %i: reply %s", __func__,
+				    c->self, ssh_err(r));
+			}
 		}
 	}
 	if (strcmp(rtype, "forwarded-streamlocal@openssh.com") == 0) {
@@ -1775,7 +1794,14 @@ channel_post_port_listener(struct ssh *ssh, Channel *c,
 	debug("Connection to port %d forwarding to %.100s port %d requested.",
 	    c->listening_port, c->path, c->host_port);
 
-	if (c->type == SSH_CHANNEL_RPORT_LISTENER) {
+	if (c->orig_listen_host != NULL) {
+		nextstate = SSH_CHANNEL_OPENING;
+		if (c->orig_listen_port != PORT_STREAMLOCAL) {
+			rtype = "forwarded-tcpip";
+		} else {
+			rtype = "forwarded-streamlocal@openssh.com";
+		}
+	} else if (c->type == SSH_CHANNEL_RPORT_LISTENER) {
 		nextstate = SSH_CHANNEL_OPENING;
 		rtype = "forwarded-tcpip";
 	} else if (c->type == SSH_CHANNEL_RUNIX_LISTENER) {
@@ -1810,6 +1836,11 @@ channel_post_port_listener(struct ssh *ssh, Channel *c,
 	nc->host_port = c->host_port;
 	if (c->path != NULL)
 		nc->path = xstrdup(c->path);
+
+		if (c->orig_listen_host != NULL) {
+			nc->orig_listen_host = xstrdup(c->orig_listen_host);
+			nc->orig_listen_port = c->orig_listen_port;
+		}
 
 	if (nextstate != SSH_CHANNEL_DYNAMIC)
 		port_open_helper(ssh, nc, rtype);
@@ -3585,6 +3616,10 @@ channel_setup_fwd_listener_streamlocal(struct ssh *ssh, int type,
 	c->host_port = port;
 	c->listening_port = PORT_STREAMLOCAL;
 	c->listening_addr = xstrdup(fwd->listen_path);
+	if (fwd->orig_listen_host != NULL) {
+		c->orig_listen_host = xstrdup(fwd->orig_listen_host);
+		c->orig_listen_port = fwd->orig_listen_port;
+	}
 	return 1;
 }
 

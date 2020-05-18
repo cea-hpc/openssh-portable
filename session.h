@@ -81,4 +81,5 @@ void	 do_setusercontext(struct passwd *);
 
 const char	*session_get_remote_name_or_ip(struct ssh *, u_int, int);
 
+void	 session_add_sshproxy_args(const char *, int, const char *);
 #endif

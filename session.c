@@ -168,6 +168,16 @@ static char *auth_info_file = NULL;
 static char *auth_sock_name = NULL;
 static char *auth_sock_dir = NULL;
 
+/* Arguments to pass to sshproxy */
+char sshproxy_args[4096];
+struct sshproxy_sock {
+	SLIST_ENTRY(sshproxy_sock) entry;
+	char *path;
+};
+SLIST_HEAD(sshproxy_socks, sshproxy_sock);
+static struct sshproxy_socks sshproxy_socks =
+    SLIST_HEAD_INITIALIZER(sshproxy_socks);
+
 /* removes the agent forwarding socket */
 
 static void
@@ -1184,6 +1194,8 @@ do_setup_env(struct ssh *ssh, Session *s, const char *shell)
 	if (original_command)
 		child_set_env(&env, &envsize, "SSH_ORIGINAL_COMMAND",
 		    original_command);
+	if (sshproxy_args[0] != '\0')
+		child_set_env(&env, &envsize, "SSHPROXY_ARGS", sshproxy_args);
 
 	if (debug_flag) {
 		/* dump the environment */
@@ -2701,6 +2713,15 @@ do_cleanup(struct ssh *ssh, Authctxt *authctxt)
 	 */
 	if (!use_privsep || mm_is_monitor())
 		session_destroy_all(ssh, session_pty_cleanup2);
+
+	/* cleanup sshproxy Unix sockets */
+	while (!SLIST_EMPTY(&sshproxy_socks)) {
+		struct sshproxy_sock *s = SLIST_FIRST(&sshproxy_socks);
+		SLIST_REMOVE_HEAD(&sshproxy_socks, entry);
+		unlink(s->path);
+		free(s->path);
+		free(s);
+	}
 }
 
 /* Return a name for the remote host that fits inside utmp_size */
@@ -2717,3 +2738,37 @@ session_get_remote_name_or_ip(struct ssh *ssh, u_int utmp_size, int use_dns)
 	return remote;
 }
 
+void
+session_add_sshproxy_args(const char *listen_host, int listen_port,
+    const char *listen_path)
+{
+	int r = 0;
+	char buf[1024];
+	struct sshproxy_sock *s = NULL;
+
+	if (listen_port == PORT_STREAMLOCAL) {
+		r = snprintf(buf, sizeof(buf), "-R %s:%s", listen_host,
+		    listen_path);
+	} else {
+		r = snprintf(buf, sizeof(buf), "-R %s:%d:%s", listen_host,
+		    listen_port, listen_path);
+	}
+
+	if (r < 0 || (size_t)r >= sizeof(sshproxy_args))
+		fatal("%s: internal buffer too small for ssh argument", __func__);
+
+	if (strlen(sshproxy_args) == 0) {
+		if (strlcpy(sshproxy_args, buf, sizeof(sshproxy_args)) >= sizeof(sshproxy_args)) {
+			fatal("%s: buffer too small for ssh arguments", __func__);
+		};
+	} else {
+		if (strlcat(sshproxy_args, " ", sizeof(sshproxy_args)) >= sizeof(sshproxy_args) ||
+		    strlcat(sshproxy_args, buf, sizeof(sshproxy_args)) >= sizeof(sshproxy_args)) {
+			fatal("%s: buffer too small for ssh arguments", __func__);
+		}
+	}
+
+	s = malloc(sizeof(struct sshproxy_sock));
+	s->path = xstrdup(listen_path);
+	SLIST_INSERT_HEAD(&sshproxy_socks, s, entry);
+}

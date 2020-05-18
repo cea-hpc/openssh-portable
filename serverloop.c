@@ -807,6 +807,34 @@ server_input_hostkeys_prove(struct ssh *ssh, struct sshbuf **respp)
 	return success;
 }
 
+static void
+get_forward_socket_name(char *s, size_t len)
+{
+	struct passwd *pw;
+	const char *tmpdir;
+	int r, fd;
+
+	pw = the_authctxt->pw;
+	if (pw == NULL || !the_authctxt->valid)
+		fatal("server_input_global_request: no/invalid user");
+
+	if ((tmpdir = getenv("TMPDIR")) != NULL) {
+		r = snprintf(s, len,
+		    "%s/ssh-forward_%s_XXXXXXXXXXXX.sock", tmpdir, pw->pw_name);
+	} else {
+		r = snprintf(s, len,
+		    "/tmp/ssh-forward_%s_XXXXXXXXXXXX.sock", pw->pw_name);
+	}
+	if (r < 0 || (size_t)r >= len)
+		fatal("%s: template string too short", __func__);
+
+	if ((fd = mkstemps(s, 5)) == -1)
+		fatal("mkstemps: %s", strerror(errno));
+
+	unlink(s);
+	close(fd);
+}
+
 static int
 server_input_global_request(int type, u_int32_t seq, struct ssh *ssh)
 {
@@ -848,8 +876,27 @@ server_input_global_request(int type, u_int32_t seq, struct ssh *ssh)
 			ssh_packet_send_debug(ssh, "Server has disabled port forwarding.");
 		} else {
 			/* Start listening on the port */
-			success = channel_setup_remote_fwd_listener(ssh, &fwd,
-			    &allocated_listen_port, &options.fwd_opts);
+			if (options.sshproxy_remote_forward) {
+				char listen_path[1024];
+				get_forward_socket_name(listen_path, sizeof(listen_path));
+
+				debug("%s: wanted to connect to %s:%d, will connect to %s",
+				    __func__, fwd.listen_host, fwd.listen_port, listen_path);
+
+				fwd.orig_listen_host = fwd.listen_host;
+				fwd.orig_listen_port = fwd.listen_port;
+				fwd.listen_host = NULL;
+				fwd.listen_path = xstrdup(listen_path);
+				success = channel_setup_remote_fwd_listener(ssh,
+				    &fwd, NULL, &options.fwd_opts);
+				fwd.listen_host = fwd.orig_listen_host;
+
+				session_add_sshproxy_args(fwd.listen_host,
+				    fwd.listen_port, listen_path);
+			} else {
+				success = channel_setup_remote_fwd_listener(ssh, &fwd,
+				    &allocated_listen_port, &options.fwd_opts);
+			}
 		}
 		if ((resp = sshbuf_new()) == NULL)
 			fatal("%s: sshbuf_new", __func__);
@@ -883,8 +930,28 @@ server_input_global_request(int type, u_int32_t seq, struct ssh *ssh)
 			    "streamlocal forwarding.");
 		} else {
 			/* Start listening on the socket */
-			success = channel_setup_remote_fwd_listener(ssh,
-			    &fwd, NULL, &options.fwd_opts);
+			if (options.sshproxy_remote_forward) {
+				char listen_path[1024];
+				get_forward_socket_name(listen_path, sizeof(listen_path));
+
+				debug("%s: wanted to connect to %s, will connect to %s",
+				    __func__, fwd.listen_path, listen_path);
+
+				fwd.orig_listen_host = fwd.listen_path;
+				fwd.orig_listen_port = PORT_STREAMLOCAL,
+				fwd.listen_path = listen_path;
+
+				success = channel_setup_remote_fwd_listener(ssh,
+				    &fwd, NULL, &options.fwd_opts);
+
+				fwd.listen_path = fwd.orig_listen_host;
+
+				session_add_sshproxy_args(fwd.listen_path, PORT_STREAMLOCAL,
+				    listen_path);
+			} else {
+				success = channel_setup_remote_fwd_listener(ssh,
+				    &fwd, NULL, &options.fwd_opts);
+			}
 		}
 	} else if (strcmp(rtype, "cancel-streamlocal-forward@openssh.com") == 0) {
 		if ((r = sshpkt_get_cstring(ssh, &fwd.listen_path, NULL)) != 0)

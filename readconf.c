@@ -341,6 +341,7 @@ add_local_forward(Options *options, const struct Forward *newfwd)
 	fwd->connect_host = newfwd->connect_host;
 	fwd->connect_port = newfwd->connect_port;
 	fwd->connect_path = newfwd->connect_path;
+	fwd->orig_listen_host = NULL;
 }
 
 /*
@@ -372,6 +373,7 @@ add_remote_forward(Options *options, const struct Forward *newfwd)
 	fwd->connect_path = newfwd->connect_path;
 	fwd->handle = newfwd->handle;
 	fwd->allocated_port = 0;
+	fwd->orig_listen_host = NULL;
 }
 
 static void

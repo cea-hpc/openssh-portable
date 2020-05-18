@@ -180,6 +180,10 @@ struct Channel {
 	void			*mux_ctx;
 	int			mux_pause;
 	int     		mux_downstream_id;
+
+	/* sshproxy forwarding hack */
+	int	 orig_listen_port;
+	char	*orig_listen_host;
 };
 
 #define CHAN_EXTENDED_IGNORE		0

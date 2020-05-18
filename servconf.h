@@ -191,6 +191,8 @@ typedef struct {
 	char   **permitted_listens; /* May also be one of PERMITOPEN_* */
 	u_int   num_permitted_listens;
 
+	int	sshproxy_remote_forward;
+
 	char   *chroot_directory;
 	char   *revoked_keys_file;
 	char   *trusted_user_ca_keys;
