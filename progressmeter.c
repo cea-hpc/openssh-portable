@@ -283,11 +283,11 @@ start_progress_meter(const char *f, off_t filesize, off_t *ctr, int channel)
 
 		setscreensize();
 		refresh_progress_meter(1);
-
-		ssh_signal(SIGALRM, sig_alarm);
-		ssh_signal(SIGWINCH, sig_winch);
-		alarm(UPDATE_INTERVAL);
 	}
+	ssh_signal(SIGALRM, sig_alarm);
+	ssh_signal(SIGWINCH, sig_winch);
+	alarm(UPDATE_INTERVAL);
+
 	pthread_mutex_unlock(&progress_mutex);
 }
 
@@ -297,8 +297,6 @@ stop_progress_meter(int channel, int extra_channels)
 	pthread_mutex_lock(&progress_mutex);
 	total_done += *counter[channel];
 	progress_channels[channel] = 0;
-
-	alarm(0);
 
 	if (!can_output())
 		return;
