@@ -292,11 +292,11 @@ start_progress_meter(const char *f, off_t filesize, off_t *ctr, int channel)
 		setscreensize();
 		if (can_output())
 			refresh_progress_meter();
-
-		signal(SIGALRM, update_progress_meter);
-		signal(SIGWINCH, sig_winch);
-		alarm(UPDATE_INTERVAL);
 	}
+	signal(SIGALRM, update_progress_meter);
+	signal(SIGWINCH, sig_winch);
+	alarm(UPDATE_INTERVAL);
+
 	pthread_mutex_unlock(&progress_mutex);
 }
 
@@ -306,8 +306,6 @@ stop_progress_meter(int channel, int extra_channels)
 	pthread_mutex_lock(&progress_mutex);
 	total_done += *counter[channel];
 	progress_channels[channel] = 0;
-
-	alarm(0);
 
 	if (!can_output())
 		return;
