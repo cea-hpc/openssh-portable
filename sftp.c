@@ -2558,10 +2558,13 @@ main(int argc, char **argv)
 		}
 
 		if (!quiet) {
-			if (sftp_direct == NULL && extra_channels)
+			if (sftp_direct == NULL && extra_channels && addrlist != NULL)
 				fprintf(stderr, "Connected %s to %s (%s).\n",
 				    channel_name , host,
 				    inet_ntoa(h->sin_addr));
+			else if (sftp_direct == NULL && extra_channels)
+				fprintf(stderr, "Connected %s to %s.\n",
+				    channel_name , host);
 			else if (sftp_direct == NULL)
 				fprintf(stderr, "Connected to %s.\n", host);
 			else
