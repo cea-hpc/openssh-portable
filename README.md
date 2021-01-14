@@ -19,11 +19,27 @@ The official documentation for OpenSSH are the man pages for each tool:
 * [ssh-keyscan(8)](https://man.openbsd.org/ssh-keyscan.8)
 * [sftp-server(8)](https://man.openbsd.org/sftp-server.8)
 
+## Parallel SFTP
+
 This version of sftp has an additional option:
 
 Flag | Meaning
 --- | ---
 ``-n extra_channels`` | Sets the number of extra ssh channels used by get and put. Defaults to 0. Maximum value is 63. If set to a value > 0, get and put will be made by these extra channels in parallel. If destination resolves to multiple addresses, ssh connections are dispatched between these addresses.
+
+RPMs and SRPMs for RHEL 7 and 8 are available in the [releases page](https://github.com/cea-hpc/openssh-portable/releases).
+
+In order to only compile psftp:
+
+```
+git clone https://github.com/cea-hpc/openssh-portable
+cd openssh-portable
+git checkout parallel_sftp
+autoreconf
+./configure # [options]
+make sftp
+mv sftp psftp # now you can move the psftp binary in your path
+```
 
 ## Stable Releases
 
