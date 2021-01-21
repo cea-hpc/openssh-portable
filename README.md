@@ -29,7 +29,7 @@ Flag | Meaning
 
 RPMs and SRPMs for RHEL 7 and 8 are available in the [releases page](https://github.com/cea-hpc/openssh-portable/releases).
 
-In order to only compile psftp:
+In order to only compile parallel-sftp:
 
 ```
 git clone https://github.com/cea-hpc/openssh-portable
@@ -38,7 +38,7 @@ git checkout parallel_sftp
 autoreconf
 ./configure # [options]
 make sftp
-mv sftp psftp # now you can move the psftp binary in your path
+mv sftp parallel-sftp # now you can move the parallel-sftp binary in your path
 ```
 
 ## Stable Releases
