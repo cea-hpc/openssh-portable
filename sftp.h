@@ -101,7 +101,7 @@ struct thread_args;
 
 int	sftp_server_main(int, char **, struct passwd *);
 void	sftp_server_cleanup_exit(int) __attribute__((noreturn));
-struct addrinfo *	resolve_host(const char *);
+struct addrinfo *	resolve_host(const char *, int);
 void *			thread_loop(void *);
 int			thread_real_loop(struct thread_args *targs);
 struct thread_queue *	thread_queue_create(unsigned);
