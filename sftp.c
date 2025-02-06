@@ -2453,6 +2453,7 @@ main(int argc, char **argv)
 	char channel_name[15] = "main channel";
 	struct thread_args targs[MAX_CHANNELS];
 	struct thread_order order;
+	int ipv = 0;
 
 	/* Ensure that fds 0, 1 and 2 are open or directed to /dev/null */
 	sanitise_stdfd();
@@ -2477,7 +2478,13 @@ main(int argc, char **argv)
 		switch (ch) {
 		/* Passed through to ssh(1) */
 		case '4':
+			ipv = 4;
+			addargs(&args, "-%c", ch);
+			break;
 		case '6':
+			ipv = 6;
+			addargs(&args, "-%c", ch);
+			break;
 		case 'C':
 			addargs(&args, "-%c", ch);
 			break;
@@ -2641,7 +2648,7 @@ main(int argc, char **argv)
 	}
 
 	if (extra_channels) {
-		addrlist = resolve_host(host);
+		addrlist = resolve_host(host, ipv);
 		if (addrlist != NULL)
 			p = random_host(addrlist);
 		queue = thread_queue_create(10 * extra_channels);
@@ -2964,7 +2971,7 @@ thread_queue_dequeue()
  * Returns NULL on failure.
  */
 struct addrinfo *
-resolve_host(const char *name)
+resolve_host(const char *name, int ipv)
 {
 	char strport[NI_MAXSERV];
 	struct addrinfo hints, *res;
@@ -2972,7 +2979,16 @@ resolve_host(const char *name)
 
 	snprintf(strport, sizeof strport, "%d", port);
 	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_UNSPEC;
+	switch (ipv) {
+	case 4:
+		hints.ai_family = AF_INET;
+		break;
+	case 6:
+		hints.ai_family = AF_INET6;
+		break;
+	default:
+		hints.ai_family = AF_UNSPEC;
+	}
 	hints.ai_socktype = SOCK_STREAM;
 	if ((gaierr = getaddrinfo(name, strport, &hints, &res)) != 0) {
 		return NULL;
