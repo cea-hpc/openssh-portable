@@ -1,4 +1,4 @@
-FROM almalinux:latest
+FROM almalinux:9.4
 
 # Install development environment to compile sftp
 RUN set -ex \
