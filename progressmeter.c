@@ -72,7 +72,7 @@ static off_t end_pos;		/* ending position of transfer */
 static off_t cur_pos;		/* transfer position as of last refresh */
 static volatile off_t *counter[MAX_CHANNELS];	/* progress counter */
 static long stalled;		/* how long we have been stalled */
-static int bytes_per_second;	/* current speed in bytes per second */
+static long long bytes_per_second;	/* current speed in bytes per second */
 static int win_size;		/* terminal window size */
 static volatile sig_atomic_t win_resized; /* for window resizing */
 static volatile sig_atomic_t alarm_fired;
@@ -131,7 +131,7 @@ refresh_progress_meter(int force_update)
 	double elapsed, now;
 	int percent;
 	off_t bytes_left;
-	int cur_speed;
+	long long cur_speed;
 	int hours, minutes, seconds;
 	int file_len;
 	int i;
